@@ -137,3 +137,27 @@ def test_latest_snapshot_links_asset(conn, push):
     push(0)
     snap = metrics.latest(conn, 90, now=at(0))[0]
     assert snap["asset_id"] == "AST-000002" and snap["location"] == "SH01-A01 U2" and not snap["stale"]
+
+
+# ---------------------------------------------------------- review fixes
+@pytest.mark.parametrize("vendor", ["=HYPERLINK(\"http://evil\")", "+cmd", "-2+3", "@SUM(A1)", "x" * 81, ""])
+def test_formula_like_or_bad_vendor_rejected(conn, vendor):
+    result = inventory.import_csv(conn, csv_text(row(vendor=vendor.replace(",", ""))))
+    assert not result.ok and "vendor" in result.errors[0]
+
+
+def test_export_neutralises_formula_cells(conn):
+    conn.execute("UPDATE devices SET model = '=1+1' WHERE asset_id = 'AST-000001'")   # e.g. legacy bad data
+    line = next(l for l in inventory.export_csv(conn).splitlines() if l.startswith("AST-000001"))
+    assert ",'=1+1," in line
+
+
+def test_latest_uses_constant_number_of_queries(conn, push):
+    for i in range(1, 6):
+        push(0, host=f"sh{i:02d}-a01-srv01")
+    statements = []
+    conn.set_trace_callback(statements.append)
+    snaps = metrics.latest(conn, 90, now=at(0))
+    conn.set_trace_callback(None)
+    assert len(snaps) == 5 and len(statements) <= 5
+    assert {s["location"] for s in snaps} == {f"SH{i:02d}-A01 U2" for i in range(1, 6)}

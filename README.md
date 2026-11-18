@@ -133,7 +133,7 @@ docker compose stop collector-south # collector_down for sh-south only
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest                                   # 202 tests
+python -m pytest                                   # 210 tests
 python -m inspector.main init                      # schema + mock inventory
 python -m inspector.main create-user me --role admin
 python -m inspector.main server                    # http://127.0.0.1:8000
@@ -171,7 +171,7 @@ inspector/
 config/         server.yaml, rules.yaml, collectors/*.yaml
 docker/         host image (sshd, nginx, stress-ng), central bootstrap
 deploy/         ansible/, systemd/
-tests/          202 pytest tests
+tests/          210 pytest tests
 ```
 
 Python 3.10+ · Flask · SQLite · OpenSSH / paramiko · Jinja2 · pytest · Docker Compose · Ansible · systemd

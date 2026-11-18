@@ -3,7 +3,6 @@ import re
 import sqlite3
 from datetime import datetime, timedelta
 
-from inspector import lookup
 from inspector.db import to_text, utcnow
 
 KEY_RE = re.compile(r"^[A-Za-z0-9_./@:-]{1,120}$")
@@ -11,17 +10,11 @@ MAX_KEYS = 10
 MAX_POINTS = 300
 
 
-def _values(conn: sqlite3.Connection, sample_id: int) -> dict:
-    return {v["key"]: (v["num"] if v["num"] is not None else v["text"]) for v in conn.execute(
-        "SELECT key, num, text FROM sample_values WHERE sample_id = ?", (sample_id,))}
-
-
-def snapshot(conn: sqlite3.Connection, row: sqlite3.Row, stale_before: str) -> dict:
+def snapshot(row: sqlite3.Row, values: dict, stale_before: str, asset: dict | None,
+             open_alerts: int) -> dict:
     """Display-ready summary of one sample row."""
-    values = _values(conn, row["id"])
-    device = conn.execute("SELECT asset_id FROM devices WHERE hostname = ?", (row["host"],)).fetchone()
     return {
-        "host": row["host"], "asset_id": device["asset_id"] if device else None,
+        "host": row["host"], "asset_id": asset["asset_id"] if asset else None,
         "datacenter": row["datacenter"], "collector": row["collector"],
         "collected_at": row["collected_at"], "up": bool(row["up"]), "error": row["error"],
         "stale": row["collected_at"] < stale_before,
@@ -32,9 +25,8 @@ def snapshot(conn: sqlite3.Connection, row: sqlite3.Row, stale_before: str) -> d
         "services_down": sorted(k[8:-3] for k, v in values.items()
                                 if k.startswith("service.") and k.endswith(".up") and v == 0),
         "checks": {k[6:]: v for k, v in values.items() if k.startswith("check.")},
-        "open_alerts": conn.execute("SELECT COUNT(*) FROM alerts WHERE host = ? AND status = 'open'",
-                                    (row["host"],)).fetchone()[0],
-        "location": lookup.get_location(conn, row["host"]),
+        "open_alerts": open_alerts,
+        "location": f"{asset['rack']} U{asset['u_position']}" if asset else None,
     }
 
 
@@ -47,7 +39,21 @@ def latest(conn: sqlite3.Connection, stale_seconds: int, host: str | None = None
             JOIN (SELECT host, MAX(collected_at) AS t FROM samples {where} GROUP BY host) latest
               ON latest.host = s.host AND latest.t = s.collected_at
             ORDER BY s.host""", params).fetchall()
-    return [snapshot(conn, r, stale_before) for r in rows]
+    if not rows:
+        return []
+    # A constant number of queries however many hosts there are (no per-host N+1 lookups).
+    ids = [r["id"] for r in rows]
+    marks = ",".join("?" * len(ids))
+    values: dict[int, dict] = {i: {} for i in ids}
+    for v in conn.execute(f"SELECT sample_id, key, num, text FROM sample_values WHERE sample_id IN ({marks})", ids):
+        values[v["sample_id"]][v["key"]] = v["num"] if v["num"] is not None else v["text"]
+    assets = {a["hostname"]: dict(a) for a in conn.execute(
+        """SELECT d.hostname, d.asset_id, d.u_position, r.code AS rack
+           FROM devices d JOIN racks r ON r.id = d.rack_id""")}
+    open_counts = {a["host"]: a["n"] for a in conn.execute(
+        "SELECT host, COUNT(*) AS n FROM alerts WHERE status = 'open' GROUP BY host")}
+    return [snapshot(r, values[r["id"]], stale_before, assets.get(r["host"]), open_counts.get(r["host"], 0))
+            for r in rows]
 
 
 def history(conn: sqlite3.Connection, host: str, keys: list[str], hours: int = 24,

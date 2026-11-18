@@ -6,6 +6,7 @@ applied in one transaction: either every row is applied or none is.
 """
 import csv
 import io
+import re
 import ipaddress
 import sqlite3
 from dataclasses import dataclass, field
@@ -17,6 +18,14 @@ COLUMNS = ["asset_id", "hostname", "ip", "device_type", "vendor", "model", "rack
 DEVICE_TYPES = ("server", "switch")
 STATUSES = ("online", "offline", "maintenance")
 MAX_ROWS = 20000
+TEXT_RE = re.compile(r"^[A-Za-z0-9 ._()/+-]{1,80}$")
+# Cells starting with these are run as formulas by Excel/Sheets (CSV injection, OWASP).
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _safe_cell(value) -> str:
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(FORMULA_START) else text
 
 
 
@@ -58,7 +67,7 @@ def export_csv(conn: sqlite3.Connection) -> str:
             """SELECT d.asset_id, d.hostname, d.ip, d.device_type, d.vendor, d.model, r.code AS rack,
                       d.u_position, d.status
                FROM devices d JOIN racks r ON r.id = d.rack_id ORDER BY d.asset_id"""):
-        writer.writerow([r[c] for c in COLUMNS])
+        writer.writerow([_safe_cell(r[c]) for c in COLUMNS])
     return out.getvalue()
 
 
@@ -114,8 +123,9 @@ def _parse(text: str, racks: dict) -> tuple[list[dict], list[str]]:
                 problems.append(f"u_position must be 1-{rack['total_u']}")
         except ValueError:
             problems.append("u_position must be a number")
-        if not r["vendor"] or not r["model"]:
-            problems.append("vendor and model required")
+        for col in ("vendor", "model"):
+            if not TEXT_RE.match(r[col]) or r[col].startswith(FORMULA_START):
+                problems.append(f"{col} must be 1-80 letters, digits, spaces or . _ ( ) / + - (not starting with + or -)")
         if problems:
             errors.append(f"line {line}: " + "; ".join(problems))
         else:
