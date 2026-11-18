@@ -6,9 +6,13 @@ A personal re-implementation of an internal tool I built as a junior engineer at
 rebuilt from scratch and extended to a production-style architecture. All data is mock data;
 no company code or data is used.
 
-| Monitoring | Device lookup | Daily report | Admin & audit |
-|---|---|---|---|
-| ![Monitoring](docs/monitoring.png) | ![Lookup](docs/lookup.png) | ![Report](docs/report.png) | ![Admin](docs/admin.png) |
+| Monitoring | Device page | Rack elevation |
+|---|---|---|
+| ![Monitoring](docs/monitoring.png) | ![Device](docs/device.png) | ![Rack](docs/rack.png) |
+
+| Device lookup | Daily report | Admin & audit |
+|---|---|---|
+| ![Lookup](docs/lookup.png) | ![Report](docs/report.png) | ![Admin](docs/admin.png) |
 
 *Screenshots from a real run: 10 SSH hosts, 2 site collectors, central server and scheduler as separate
 processes, with a host failure, a killed service, CPU stress, a central outage and a collector outage.*
@@ -80,7 +84,15 @@ acknowledgements, maintenance windows and user changes. Collectors authenticate 
 tokens (stored as SHA-256 hashes, rotatable).
 
 **Device lookup (CMDB)** — 10 data centres, 40 racks, 360 devices. One search box for IP, IP prefix,
-rack, data centre or asset ID; device page shows every port and what it is cabled to.
+rack, data centre or asset ID. The **device page joins inventory and monitoring**: live status, 24-hour
+CPU / memory / disk / reachability trends, alert history with who handled each alert, and every port
+with what it is cabled to. Searching a rack shows a **rack elevation** (42U, NetBox-style) with each
+device coloured by its alert state.
+
+**CMDB sync** — export the inventory as CSV, or import a CMDB export (CLI or admin page). Rows are
+upserted by asset ID; the whole file is validated (IP format, known rack, free U position, unique
+hostname/IP, duplicates inside the file) and applied in one transaction — all or nothing — with a
+dry-run mode that reports every problem by line number.
 
 **Daily report** — availability per data centre, top problem hosts, every alert with who handled it,
 per-host CPU / memory / disk. Emailed to channels with `daily_report: true`. Data retention built in.
@@ -121,13 +133,13 @@ docker compose stop collector-south # collector_down for sh-south only
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest                                   # 174 tests
+python -m pytest                                   # 202 tests
 python -m inspector.main init                      # schema + mock inventory
 python -m inspector.main create-user me --role admin
 python -m inspector.main server                    # http://127.0.0.1:8000
 ```
 
-CLI: `init | create-user | add-collector | server | scheduler | report | check-config | agent | collect-once`
+CLI: `init | create-user | add-collector | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices`
 
 ## Design decisions and trade-offs
 
@@ -155,10 +167,11 @@ inspector/
   app.py        web UI + REST API + collector API               auth.py      users, roles, tokens, audit
   scheduler.py  delivery, watchdog, reminders, daily report     report.py    HTML report, retention
   lookup.py     CMDB search and cabling                         seed.py      mock inventory
+  metrics.py    host snapshots, metric history                  inventory.py rack elevation, CSV import/export
 config/         server.yaml, rules.yaml, collectors/*.yaml
 docker/         host image (sshd, nginx, stress-ng), central bootstrap
 deploy/         ansible/, systemd/
-tests/          174 pytest tests
+tests/          202 pytest tests
 ```
 
 Python 3.10+ · Flask · SQLite · OpenSSH / paramiko · Jinja2 · pytest · Docker Compose · Ansible · systemd

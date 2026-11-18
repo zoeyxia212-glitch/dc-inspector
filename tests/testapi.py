@@ -166,3 +166,46 @@ def test_reports(login, tmp_path):
     assert c.get("/reports/inspection report 20261118.html").status_code == 200
     assert c.get("/reports/../config/server.yaml").status_code == 404
     assert c.get("/reports/..%2Fconfig%2Fserver.yaml").status_code == 404
+
+
+# ---------------------------------------------------------- device insights
+def test_device_detail_includes_monitoring(app, login):
+    app.test_client().post("/api/v1/ingest", json={"samples": [sample(**{"service.nginx.up": 0.0})]}, headers=TOKEN)
+    d = login("vera").get("/api/v1/devices/AST-000002").get_json()
+    assert d["monitoring"]["latest"]["services_down"] == ["nginx"]
+    assert [(a["rule"], a["status"]) for a in d["monitoring"]["alerts"]] == [("service_down", "open")]
+    switch = login("vera").get("/api/v1/devices/AST-000001").get_json()
+    assert switch["monitoring"]["latest"] is None
+
+
+def test_history_endpoint(app, login):
+    c = app.test_client()
+    c.post("/api/v1/ingest", json={"samples": [sample(seconds_ago=60, **{"cpu.percent": 20.0}),
+                                               sample(**{"cpu.percent": 40.0})]}, headers=TOKEN)
+    data = login("vera").get(f"/api/v1/hosts/{HOST}/history?keys=cpu.percent&hours=1").get_json()
+    assert [p[1] for p in data["series"]["cpu.percent"]] == [20.0, 40.0]
+    assert login("vera").get(f"/api/v1/hosts/{HOST}/history?hours=0").status_code == 400
+
+
+def test_rack_endpoint(login):
+    c = login("vera")
+    assert c.get("/api/v1/racks/SH02-A01").get_json()["used_u"] == 9
+    assert c.get("/api/v1/racks/NOPE").status_code == 404
+
+
+def test_inventory_export_and_import_permissions(login, conn):
+    vera, ada = login("vera"), login("ada")
+    res = vera.get("/api/v1/inventory/export.csv")
+    assert res.status_code == 200 and res.mimetype == "text/csv"
+    new = "\n".join([res.data.decode().splitlines()[0],
+                     "AST-900001,new-srv01,10.99.0.1,server,Dell,R760,SH01-A01,30,online"]) + "\n"
+    assert vera.post("/api/v1/inventory/import", json={"csv": new, "dry_run": False}).status_code == 403
+    dry = ada.post("/api/v1/inventory/import", json={"csv": new}).get_json()          # dry run by default
+    assert dry["ok"] and dry["dry_run"] and dry["created"] == 1
+    assert conn.execute("SELECT COUNT(*) FROM devices WHERE asset_id='AST-900001'").fetchone()[0] == 0
+    real = ada.post("/api/v1/inventory/import", json={"csv": new, "dry_run": False}).get_json()
+    assert real["created"] == 1
+    bad = ada.post("/api/v1/inventory/import", json={"csv": new.replace("SH01-A01", "SH99-A01"), "dry_run": False})
+    assert bad.status_code == 422 and "unknown rack" in bad.get_json()["errors"][0]
+    actions = [r[0] for r in conn.execute("SELECT action FROM audit_log")]
+    assert actions.count("inventory_import") == 1 and "inventory_export" in actions
