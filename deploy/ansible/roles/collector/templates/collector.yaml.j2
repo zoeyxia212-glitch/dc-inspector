@@ -1,0 +1,19 @@
+# Managed by Ansible — edit the inventory, not this file.
+name: {{ collector_name }}
+central_url: {{ central_url }}
+token_env: INSPECTOR_COLLECTOR_TOKEN
+spool_path: {{ inspector_data }}/spool.db
+ssh:
+  client: openssh
+  timeout: 10
+  known_hosts: {{ inspector_data }}/known_hosts
+defaults:
+  username: inspector
+  key_file: {{ inspector_data }}/id_ed25519
+  mounts: {{ inspector_mounts | default(['/']) | to_json }}
+  services: {{ inspector_services_checked | default(['sshd']) | to_json }}
+hosts:
+{% set site_group = 'site_' + collector_name.split('-')[1] %}
+{% for h in groups[site_group] %}
+  - {name: {{ h }}, address: {{ hostvars[h].ansible_host }}, datacenter: {{ h[:4] | upper }}}
+{% endfor %}

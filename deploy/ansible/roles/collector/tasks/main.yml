@@ -1,0 +1,47 @@
+- name: SSH key for the inspection account (generated on the collector, never copied off it)
+  community.crypto.openssh_keypair:
+    path: "{{ inspector_data }}/id_ed25519"
+    type: ed25519
+    owner: inspector
+    mode: "0600"
+
+- name: Fetch the public key so the inspected-hosts play can authorise it
+  ansible.builtin.fetch:
+    src: "{{ inspector_data }}/id_ed25519.pub"
+    dest: "files/{{ collector_name }}.pub"
+    flat: true
+
+- name: Collector configuration (hosts of this site)
+  ansible.builtin.template:
+    src: collector.yaml.j2
+    dest: "{{ inspector_etc }}/collector.yaml"
+    group: inspector
+    mode: "0640"
+  notify: restart inspector
+
+- name: Collector token
+  ansible.builtin.copy:
+    content: "INSPECTOR_COLLECTOR_TOKEN={{ vault_collector_tokens[collector_name] }}\n"
+    dest: "{{ inspector_etc }}/collector.env"
+    owner: root
+    group: inspector
+    mode: "0640"
+  no_log: true
+  notify: restart inspector
+
+- name: systemd unit
+  ansible.builtin.copy:
+    src: "{{ inspector_home }}/src/deploy/systemd/inspector-collector.service"
+    dest: /etc/systemd/system/inspector-collector.service
+    remote_src: true
+  notify: restart inspector
+
+- name: Start collector
+  ansible.builtin.systemd:
+    name: inspector-collector
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- ansible.builtin.set_fact:
+    inspector_services: [inspector-collector]

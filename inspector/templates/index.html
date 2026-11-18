@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DC Inspector</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #f5f6f8; color: #1d2330; }
+  header { background: #1d2330; color: #fff; padding: 0 24px; display: flex; align-items: center; gap: 28px; }
+  header .brand { font-weight: 600; padding: 14px 0; }
+  header .user { margin-left: auto; font-size: 13px; color: #b8bfcc; display: flex; gap: 12px; align-items: center; }
+  header .user form { margin: 0; } header .user button { background: none; border: 1px solid #4b5563; color: #d1d5db; border-radius: 5px; padding: 4px 10px; cursor: pointer; }
+  nav button { background: none; border: 0; color: #b8bfcc; padding: 15px 4px; margin-right: 14px; font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.active { color: #fff; border-bottom-color: #2f6fed; }
+  main { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+  section { display: none; } section.active { display: block; }
+  form.inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input, select { padding: 9px 11px; font-size: 14px; border: 1px solid #c8ccd4; border-radius: 6px; background: #fff; }
+  input.grow { flex: 1; min-width: 260px; }
+  button.primary, button.small { border: 0; border-radius: 6px; background: #2f6fed; color: #fff; cursor: pointer; }
+  button.primary { padding: 10px 18px; } button.small { padding: 4px 10px; font-size: 12px; }
+  button.secondary { background: #e5e7eb; color: #1d2330; }
+  .hint, .muted { color: #6b7280; font-size: 13px; } .hint { margin: 6px 0 18px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #eceef2; font-size: 13px; vertical-align: top; }
+  th { background: #f0f2f5; font-weight: 600; }
+  tr.clickable:hover { background: #eef3ff; cursor: pointer; }
+  .online, .up, .ok { color: #15803d; } .offline, .down, .critical, .bad { color: #b91c1c; font-weight: 600; }
+  .maintenance, .warning, .stale { color: #b45309; font-weight: 600; } .error { color: #b91c1c; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #e5e7eb; color: #374151; margin-left: 4px; }
+  .tag.ack { background: #dbeafe; color: #1e40af; } .tag.sil { background: #fef3c7; color: #92400e; }
+  h2 { margin: 26px 0 10px; font-size: 17px; } h2:first-child { margin-top: 0; }
+  .bar { display: inline-block; width: 52px; height: 7px; background: #e5e7eb; border-radius: 4px; margin-right: 6px; vertical-align: middle; }
+  .bar span { display: block; height: 100%; border-radius: 4px; background: #2f6fed; } .bar span.high { background: #b91c1c; }
+  .cards { display: flex; gap: 10px; flex-wrap: wrap; }
+  .card { background: #fff; border-radius: 8px; padding: 10px 14px; min-width: 170px; font-size: 13px; border-left: 4px solid #15803d; }
+  .card.bad { border-left-color: #b91c1c; } .card b { font-size: 14px; }
+  a { color: #2f6fed; } #toast { position: fixed; bottom: 20px; right: 20px; background: #1d2330; color: #fff; padding: 10px 16px; border-radius: 6px; display: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">DC Inspector</div>
+  <nav>
+    <button data-tab="monitor" class="active">Monitoring</button>
+    <button data-tab="lookup">Device lookup</button>
+    <button data-tab="maint">Maintenance</button>
+    <button data-tab="reports">Reports</button>
+    <button data-tab="admin" class="admin-only">Admin</button>
+  </nav>
+  <div class="user"><span>{{ user.username }} · {{ user.role }}</span>
+    <form method="post" action="/logout"><button>Sign out</button></form></div>
+</header>
+<main>
+  <section id="monitor" class="active">
+    <h2>Collectors</h2><div id="collectors" class="cards"></div>
+    <h2>Open alerts</h2><div id="alerts"></div>
+    <h2>Hosts</h2><div id="hosts"></div>
+    <h2>Recently resolved</h2><div id="resolved"></div>
+    <p class="muted" id="refreshed"></p>
+  </section>
+
+  <section id="lookup">
+    <form id="search-form" class="inline">
+      <input id="q" class="grow" placeholder="IP (10.3.1.11 or 10.3.), rack (SH01-A03 or SH01) or asset ID (AST-000123)">
+      <button class="primary">Search</button>
+    </form>
+    <p class="hint">Click a device to see its ports and cabling.</p>
+    <div id="results"></div><div id="detail"></div>
+  </section>
+
+  <section id="maint">
+    <h2>Maintenance windows</h2>
+    <p class="hint">Alerts for matching hosts are still recorded but no notifications are sent. Use a change ticket number as the reason.</p>
+    <form id="silence-form" class="inline operator-only">
+      <input id="s-host" placeholder="Host pattern, e.g. sh03-* " required>
+      <input id="s-rule" placeholder="Rule pattern (default *)">
+      <select id="s-dur"><option value="30">30 min</option><option value="60" selected>1 hour</option><option value="240">4 hours</option><option value="1440">1 day</option></select>
+      <input id="s-reason" class="grow" placeholder="Reason / change ticket (required)" required>
+      <button class="primary">Start window</button>
+    </form>
+    <div id="silences" style="margin-top:14px"></div>
+  </section>
+
+  <section id="reports"><h2>Daily inspection reports</h2><div id="report-list"></div></section>
+
+  <section id="admin">
+    <h2>Users</h2>
+    <form id="user-form" class="inline">
+      <input id="u-name" placeholder="Username" required>
+      <input id="u-pass" type="password" placeholder="Initial password (min 10 chars)" required>
+      <select id="u-role"><option>viewer</option><option>operator</option><option>admin</option></select>
+      <button class="primary">Add user</button>
+    </form>
+    <div id="users" style="margin-top:12px"></div>
+    <h2>Audit log</h2><div id="audit"></div>
+  </section>
+</main>
+<div id="toast"></div>
+<script>
+const ROLE = {{ user.role|tojson }};
+const RANK = {viewer: 0, operator: 1, admin: 2};
+const can = r => RANK[ROLE] >= RANK[r];
+document.querySelectorAll(".admin-only").forEach(el => { if (!can("admin")) el.remove(); });
+document.querySelectorAll(".operator-only").forEach(el => { if (!can("operator")) el.remove(); });
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pct = v => v === null || v === undefined ? "–" :
+  `<span class="bar"><span class="${v >= 85 ? "high" : ""}" style="width:${Math.min(v,100)}%"></span></span>${Number(v).toFixed(1)}%`;
+const when = t => t ? new Date(t).toLocaleString() : "";
+const ago = t => { if (!t) return "never"; const s = Math.round((Date.now() - new Date(t)) / 1000);
+  return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s/60)} min ago` : `${Math.round(s/3600)} h ago`; };
+function toast(msg) { const t = document.getElementById("toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => t.style.display = "none", 3000); }
+
+async function api(path, method = "GET", data) {
+  const res = await fetch(path, {method, headers: data ? {"Content-Type": "application/json"} : {},
+                                 body: data ? JSON.stringify(data) : undefined});
+  if (res.status === 401) { location.href = "/login"; throw new Error("login"); }
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || res.statusText);
+  return json;
+}
+
+// ---------- tabs ----------
+let timer = null;
+const loaders = {monitor: loadMonitor, maint: loadSilences, reports: loadReports, admin: loadAdmin};
+function show(tab) {
+  document.querySelectorAll("nav button, section").forEach(el => el.classList.remove("active"));
+  document.querySelector(`nav button[data-tab=${tab}]`).classList.add("active");
+  document.getElementById(tab).classList.add("active");
+  clearInterval(timer);
+  if (loaders[tab]) { loaders[tab](); if (tab === "monitor") timer = setInterval(loadMonitor, 15000); }
+}
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => { location.hash = b.dataset.tab; show(b.dataset.tab); }));
+
+// ---------- monitoring ----------
+async function loadMonitor() {
+  const [c, a, r, h] = await Promise.all([api("/api/v1/collectors"), api("/api/v1/alerts?status=open"),
+                                          api("/api/v1/alerts?status=resolved"), api("/api/v1/hosts")]);
+  document.getElementById("collectors").innerHTML = c.collectors.length === 0 ? '<p class="muted">No collectors registered.</p>' :
+    c.collectors.map(x => `<div class="card ${x.healthy ? "" : "bad"}"><b>${esc(x.name)}</b><br>
+      ${x.healthy ? '<span class="ok">reporting</span>' : '<span class="bad">NOT REPORTING</span>'} · ${ago(x.last_seen_at)}<br>
+      <span class="muted">${x.host_count ?? "?"} hosts · spool ${x.spooled ?? 0} · v${esc(x.version)}</span></div>`).join("");
+
+  document.getElementById("alerts").innerHTML = a.count === 0 ? '<p class="ok">No open alerts.</p>' :
+    `<table><tr><th>Severity</th><th>Host</th><th>Location</th><th>Rule</th><th>Detail</th><th>Since</th><th></th></tr>` +
+    a.alerts.map(x => `<tr><td class="${esc(x.severity)}">${esc(x.severity)}</td><td>${esc(x.host)}</td>
+      <td>${esc(x.location)}</td><td>${esc(x.rule)}${x.target ? ` <span class="tag">${esc(x.target)}</span>` : ""}</td>
+      <td>${esc(x.summary)}${x.silenced ? ' <span class="tag sil">maintenance</span>' : ""}
+        ${x.acked_by ? `<br><span class="tag ack">ack ${esc(x.acked_by)}</span> <span class="muted">${esc(x.ack_note)}</span>` : ""}</td>
+      <td>${esc(when(x.opened_at))}</td>
+      <td>${!x.acked_by && can("operator") ? `<button class="small" data-ack="${x.id}">Acknowledge</button>` : ""}</td></tr>`).join("") + "</table>";
+  document.querySelectorAll("[data-ack]").forEach(b => b.addEventListener("click", async () => {
+    const note = prompt("Acknowledge note (who is handling it / ticket):", "");
+    if (note === null) return;
+    try { await api(`/api/v1/alerts/${b.dataset.ack}/ack`, "POST", {note}); toast("Acknowledged"); loadMonitor(); }
+    catch (e) { toast(e.message); }
+  }));
+
+  document.getElementById("hosts").innerHTML = h.count === 0 ? '<p class="muted">No data yet.</p>' :
+    `<table><tr><th>Host</th><th>Location</th><th>Collector</th><th>Status</th><th>CPU</th><th>Memory</th><th>Load/core</th>
+      <th>Disk</th><th>Services down</th><th>Alerts</th><th>Last check</th></tr>` +
+    h.hosts.map(x => `<tr><td>${esc(x.host)}</td><td>${esc(x.location)}</td><td>${esc(x.collector)}</td>
+      <td class="${!x.up ? "bad" : x.stale ? "stale" : "ok"}">${!x.up ? "DOWN" : x.stale ? "STALE" : "up"}</td>
+      <td>${pct(x.cpu)}</td><td>${pct(x.mem)}</td><td>${x.load_per_core ?? "–"}</td>
+      <td>${Object.entries(x.disks).map(([m, v]) => `${esc(m)} ${pct(v)}`).join("<br>") || "–"}</td>
+      <td class="${x.services_down.length ? "bad" : ""}">${esc(x.services_down.join(", ")) || "–"}</td>
+      <td class="${x.open_alerts ? "bad" : ""}">${x.open_alerts}</td><td>${ago(x.collected_at)}</td></tr>`).join("") + "</table>";
+
+  const recent = r.alerts.slice(0, 15);
+  document.getElementById("resolved").innerHTML = recent.length === 0 ? '<p class="muted">None.</p>' :
+    `<table><tr><th>Host</th><th>Rule</th><th>Opened</th><th>Resolved</th><th>Acknowledged by</th></tr>` +
+    recent.map(x => `<tr><td>${esc(x.host)}</td><td>${esc(x.rule)}${x.target ? ` <span class="tag">${esc(x.target)}</span>` : ""}</td>
+      <td>${esc(when(x.opened_at))}</td><td>${esc(when(x.resolved_at))}</td><td>${esc(x.acked_by) || "–"}</td></tr>`).join("") + "</table>";
+  document.getElementById("refreshed").textContent = "Auto-refreshes every 15 s · last " + new Date().toLocaleTimeString();
+}
+
+// ---------- lookup ----------
+document.getElementById("search-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  document.getElementById("detail").innerHTML = "";
+  const box = document.getElementById("results");
+  try {
+    const data = await api("/api/v1/devices?q=" + encodeURIComponent(document.getElementById("q").value.trim()));
+    if (!data.count) { box.innerHTML = "<p>No devices found.</p>"; return; }
+    box.innerHTML = `<p>${data.count} device(s)</p><table><tr><th>Asset ID</th><th>Hostname</th><th>IP</th><th>Type</th>
+      <th>DC</th><th>Rack</th><th>U</th><th>Status</th></tr>` +
+      data.devices.map(d => `<tr class="clickable" data-asset="${esc(d.asset_id)}"><td>${esc(d.asset_id)}</td>
+        <td>${esc(d.hostname)}</td><td>${esc(d.ip)}</td><td>${esc(d.device_type)}</td><td>${esc(d.datacenter)}</td>
+        <td>${esc(d.rack)}</td><td>${esc(d.u_position)}</td><td class="${esc(d.status)}">${esc(d.status)}</td></tr>`).join("") + "</table>";
+    box.querySelectorAll("tr.clickable").forEach(tr => tr.addEventListener("click", () => showDetail(tr.dataset.asset)));
+  } catch (err) { box.innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+});
+async function showDetail(assetId) {
+  const d = await api("/api/v1/devices/" + encodeURIComponent(assetId));
+  const cabled = d.ports.filter(p => p.peer_hostname);
+  document.getElementById("detail").innerHTML =
+    `<h2>${esc(d.hostname)} · ${esc(d.vendor)} ${esc(d.model)} · ${esc(d.datacenter_name)} / ${esc(d.rack)} U${esc(d.u_position)}</h2>
+    <table><tr><th>Port</th><th>Speed</th><th>Status</th><th>Connected to</th></tr>` +
+    cabled.map(p => `<tr><td>${esc(p.name)}</td><td>${esc(p.speed)}</td><td class="${esc(p.status)}">${esc(p.status)}</td>
+      <td>${esc(p.peer_hostname)} · ${esc(p.peer_port)}</td></tr>`).join("") + "</table>" +
+    `<p class="hint">${d.ports.length - cabled.length} unused port(s) not shown.</p>`;
+}
+
+// ---------- maintenance ----------
+async function loadSilences() {
+  const data = await api("/api/v1/silences");
+  document.getElementById("silences").innerHTML = data.silences.length === 0 ? '<p class="muted">No active or upcoming windows.</p>' :
+    `<table><tr><th>Hosts</th><th>Rules</th><th>From</th><th>Until</th><th>Reason</th><th>By</th><th></th></tr>` +
+    data.silences.map(s => `<tr><td>${esc(s.host_pattern)}</td><td>${esc(s.rule_pattern)}</td><td>${esc(when(s.starts_at))}</td>
+      <td>${esc(when(s.ends_at))}</td><td>${esc(s.reason)}</td><td>${esc(s.created_by)}</td>
+      <td>${can("operator") ? `<button class="small secondary" data-end="${s.id}">End now</button>` : ""}</td></tr>`).join("") + "</table>";
+  document.querySelectorAll("[data-end]").forEach(b => b.addEventListener("click", async () => {
+    try { await api(`/api/v1/silences/${b.dataset.end}`, "DELETE"); toast("Window ended"); loadSilences(); } catch (e) { toast(e.message); }
+  }));
+}
+document.getElementById("silence-form")?.addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    await api("/api/v1/silences", "POST", {host_pattern: document.getElementById("s-host").value,
+      rule_pattern: document.getElementById("s-rule").value || "*", duration_minutes: +document.getElementById("s-dur").value,
+      reason: document.getElementById("s-reason").value});
+    toast("Maintenance window started"); e.target.reset(); loadSilences();
+  } catch (err) { toast(err.message); }
+});
+
+// ---------- reports ----------
+async function loadReports() {
+  const data = await api("/api/v1/reports");
+  document.getElementById("report-list").innerHTML = data.reports.length === 0 ? '<p class="muted">No reports yet (generated daily).</p>' :
+    "<ul>" + data.reports.map(n => `<li><a href="/reports/${encodeURIComponent(n)}" target="_blank">${esc(n)}</a></li>`).join("") + "</ul>";
+}
+
+// ---------- admin ----------
+async function loadAdmin() {
+  const [u, a] = await Promise.all([api("/api/v1/users"), api("/api/v1/audit?limit=100")]);
+  document.getElementById("users").innerHTML = `<table><tr><th>User</th><th>Role</th><th>Status</th><th>Last login</th></tr>` +
+    u.users.map(x => `<tr><td>${esc(x.username)}</td>
+      <td><select data-role="${esc(x.username)}">${["viewer","operator","admin"].map(r => `<option ${r === x.role ? "selected" : ""}>${r}</option>`).join("")}</select></td>
+      <td>${x.active ? "active" : '<span class="bad">disabled</span>'}${x.locked_until ? ' <span class="tag sil">locked</span>' : ""}
+        <button class="small secondary" data-active="${esc(x.username)}" data-value="${x.active ? 0 : 1}">${x.active ? "Disable" : "Enable"}</button></td>
+      <td>${esc(when(x.last_login_at)) || "never"}</td></tr>`).join("") + "</table>";
+  document.querySelectorAll("[data-role]").forEach(s => s.addEventListener("change", () => updateUser(s.dataset.role, {role: s.value})));
+  document.querySelectorAll("[data-active]").forEach(b => b.addEventListener("click", () => updateUser(b.dataset.active, {active: b.dataset.value === "1"})));
+  document.getElementById("audit").innerHTML = `<table><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr>` +
+    a.entries.map(x => `<tr><td>${esc(when(x.at))}</td><td>${esc(x.username)}</td><td>${esc(x.action)}</td>
+      <td>${esc(x.detail)}</td><td>${esc(x.ip)}</td></tr>`).join("") + "</table>";
+}
+async function updateUser(name, change) {
+  try { await api(`/api/v1/users/${encodeURIComponent(name)}`, "PATCH", change); toast("Saved"); } catch (e) { toast(e.message); }
+  loadAdmin();
+}
+document.getElementById("user-form")?.addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    await api("/api/v1/users", "POST", {username: document.getElementById("u-name").value,
+      password: document.getElementById("u-pass").value, role: document.getElementById("u-role").value});
+    toast("User created"); e.target.reset(); loadAdmin();
+  } catch (err) { toast(err.message); }
+});
+
+const startTab = (location.hash || "").slice(1);
+show(/^\w+$/.test(startTab) && document.querySelector(`nav button[data-tab="${startTab}"]`) ? startTab : "monitor");
+</script>
+</body>
+</html>

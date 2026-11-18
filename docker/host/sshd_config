@@ -1,0 +1,12 @@
+# Hardened for an inspection account: keys only, no root, no forwarding.
+Port 22
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+AllowUsers inspector
+AllowTcpForwarding no
+X11Forwarding no
+MaxStartups 30:50:100
+ClientAliveInterval 30
