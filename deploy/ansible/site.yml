@@ -1,0 +1,33 @@
+# ansible-playbook -i inventory.ini site.yml --ask-vault-pass
+- name: Install application on central and collectors
+  hosts: central:collectors
+  become: true
+  roles: [common]
+
+- name: Central server
+  hosts: central
+  become: true
+  roles: [central]
+
+- name: Regional collectors
+  hosts: collectors
+  become: true
+  roles: [collector]
+
+- name: Read-only inspection account on every inspected host
+  hosts: inspected_hosts
+  become: true
+  tasks:
+    - name: Inspection user (no password, no sudo)
+      ansible.builtin.user:
+        name: inspector
+        shell: /bin/sh
+        password: "*"
+        create_home: true
+    - name: Authorise the site collector's key
+      ansible.posix.authorized_key:
+        user: inspector
+        key: "{{ lookup('file', 'files/' + site_collector + '.pub') }}"
+        key_options: 'no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty'
+      vars:
+        site_collector: "{{ 'sh-north' if 'site_north' in group_names else 'sh-south' }}"

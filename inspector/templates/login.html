@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · DC Inspector</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #1d2330; display: grid; place-items: center; min-height: 100vh; }
+  form { background: #fff; padding: 32px 36px; border-radius: 10px; width: 320px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+  h1 { margin: 0 0 4px; font-size: 20px; color: #1d2330; } p.sub { margin: 0 0 22px; color: #6b7280; font-size: 13px; }
+  label { display: block; font-size: 13px; color: #374151; margin: 12px 0 4px; }
+  input { width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 15px; border: 1px solid #c8ccd4; border-radius: 6px; }
+  button { margin-top: 20px; width: 100%; padding: 11px; border: 0; border-radius: 6px; background: #2f6fed; color: #fff; font-size: 15px; cursor: pointer; }
+  .error { background: #fef2f2; color: #b91c1c; padding: 8px 10px; border-radius: 6px; font-size: 13px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<form method="post" action="/login" autocomplete="on">
+  <h1>DC Inspector</h1>
+  <p class="sub">Data centre inspection &amp; device lookup</p>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <label for="username">Username</label>
+  <input id="username" name="username" autocomplete="username" required autofocus>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <button>Sign in</button>
+</form>
+</body>
+</html>

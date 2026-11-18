@@ -1,0 +1,23 @@
+# Collector for site sh-south. Runs inside the site network; only reaches its own hosts and the central server.
+name: sh-south
+central_url: http://central:8000
+token_env: INSPECTOR_COLLECTOR_TOKEN
+spool_path: /var/lib/inspector/spool.db
+
+ssh:
+  client: openssh          # system ssh + key; paramiko also supported (password or key)
+  timeout: 10
+  # known_hosts: /etc/inspector/known_hosts   # production: pin host keys
+
+defaults:
+  username: inspector      # read-only account, no sudo
+  key_file: /keys/id_ed25519
+  mounts: ["/", "/data"]
+  services: ["nginx", "crond"]
+
+hosts:
+  - {name: sh06-a01-srv01, address: sh06-a01-srv01, datacenter: SH06}
+  - {name: sh07-a01-srv01, address: sh07-a01-srv01, datacenter: SH07}
+  - {name: sh08-a01-srv01, address: sh08-a01-srv01, datacenter: SH08}
+  - {name: sh09-a01-srv01, address: sh09-a01-srv01, datacenter: SH09}
+  - {name: sh10-a01-srv01, address: sh10-a01-srv01, datacenter: SH10}

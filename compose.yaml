@@ -1,0 +1,146 @@
+# Realistic topology in one command:  cp .env.example .env  &&  docker compose up --build
+#
+#   site-north network : 5 hosts (SH01-SH05) + collector sh-north
+#   site-south network : 5 hosts (SH06-SH10) + collector sh-south
+#   mgmt network       : central + both collectors
+#
+# The central server cannot reach any host; each collector reaches only its own site.
+# Open http://localhost:8000 and sign in as admin with INSPECTOR_ADMIN_PASSWORD.
+
+x-host: &host
+  build: ./docker/host
+  image: dcinspector-host
+  tmpfs:
+    - /data:size=64m
+  volumes:
+    - sshkeys:/keys:ro
+  depends_on:
+    keygen: {condition: service_completed_successfully}
+  restart: unless-stopped
+
+x-app: &app
+  build: .
+  image: dcinspector-app
+  restart: unless-stopped
+
+services:
+  keygen:          # one-off: SSH key pair for the inspection account
+    image: dcinspector-host
+    build: ./docker/host
+    entrypoint: ["sh", "-c", "[ -f /keys/id_ed25519 ] || ssh-keygen -q -t ed25519 -N '' -C dc-inspector -f /keys/id_ed25519; chmod 644 /keys/id_ed25519.pub; chown 999 /keys/id_ed25519 2>/dev/null; chmod 400 /keys/id_ed25519"]
+    volumes: [sshkeys:/keys]
+    restart: "no"
+
+  bootstrap:       # one-off: schema, mock inventory, first admin, collector tokens
+    <<: *app
+    command: ["/usr/local/bin/bootstrap.sh"]
+    environment: &central-env
+      INSPECTOR_ADMIN_PASSWORD: ${INSPECTOR_ADMIN_PASSWORD:?set INSPECTOR_ADMIN_PASSWORD in .env}
+      TOKEN_SH_NORTH: ${TOKEN_SH_NORTH:?set in .env}
+      TOKEN_SH_SOUTH: ${TOKEN_SH_SOUTH:?set in .env}
+      INSPECTOR_SECRET_KEY: ${INSPECTOR_SECRET_KEY:?set in .env}
+      INSPECTOR_PUBLIC_URL: http://localhost:8000
+      WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
+      DINGTALK_WEBHOOK_URL: ${DINGTALK_WEBHOOK_URL:-}
+      DINGTALK_SECRET: ${DINGTALK_SECRET:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    volumes: [central-data:/var/lib/inspector]
+    networks: [mgmt]
+    restart: "no"
+
+  central:         # web UI + API (gunicorn)
+    <<: *app
+    environment: *central-env
+    volumes: [central-data:/var/lib/inspector]
+    ports: ["8000:8000"]
+    networks: [mgmt]
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+
+  scheduler:       # notifications, watchdog, daily report, retention
+    <<: *app
+    command: ["python", "-m", "inspector.main", "scheduler"]
+    environment: *central-env
+    volumes: [central-data:/var/lib/inspector]
+    networks: [mgmt]
+    depends_on:
+      bootstrap: {condition: service_completed_successfully}
+
+  collector-north:
+    <<: *app
+    command: ["python", "-m", "inspector.main", "agent", "--config", "/app/config/collectors/sh-north.yaml"]
+    environment:
+      INSPECTOR_COLLECTOR_TOKEN: ${TOKEN_SH_NORTH}
+    volumes:
+      - sshkeys:/keys:ro
+      - spool-north:/var/lib/inspector
+    networks: [mgmt, site-north]
+    depends_on:
+      central: {condition: service_healthy}
+  sh01-a01-srv01:
+    <<: *host
+    hostname: sh01-a01-srv01
+    networks: [site-north]
+  sh02-a01-srv01:
+    <<: *host
+    hostname: sh02-a01-srv01
+    networks: [site-north]
+  sh03-a01-srv01:
+    <<: *host
+    hostname: sh03-a01-srv01
+    networks: [site-north]
+  sh04-a01-srv01:
+    <<: *host
+    hostname: sh04-a01-srv01
+    networks: [site-north]
+  sh05-a01-srv01:
+    <<: *host
+    hostname: sh05-a01-srv01
+    networks: [site-north]
+
+  collector-south:
+    <<: *app
+    command: ["python", "-m", "inspector.main", "agent", "--config", "/app/config/collectors/sh-south.yaml"]
+    environment:
+      INSPECTOR_COLLECTOR_TOKEN: ${TOKEN_SH_SOUTH}
+    volumes:
+      - sshkeys:/keys:ro
+      - spool-south:/var/lib/inspector
+    networks: [mgmt, site-south]
+    depends_on:
+      central: {condition: service_healthy}
+  sh06-a01-srv01:
+    <<: *host
+    hostname: sh06-a01-srv01
+    networks: [site-south]
+  sh07-a01-srv01:
+    <<: *host
+    hostname: sh07-a01-srv01
+    networks: [site-south]
+  sh08-a01-srv01:
+    <<: *host
+    hostname: sh08-a01-srv01
+    networks: [site-south]
+  sh09-a01-srv01:
+    <<: *host
+    hostname: sh09-a01-srv01
+    networks: [site-south]
+  sh10-a01-srv01:
+    <<: *host
+    hostname: sh10-a01-srv01
+    networks: [site-south]
+
+networks:
+  mgmt:
+  site-north:
+  site-south:
+
+volumes:
+  central-data:
+  sshkeys:
+  spool-north:
+  spool-south:

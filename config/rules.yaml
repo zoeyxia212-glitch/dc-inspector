@@ -1,0 +1,66 @@
+# Alert rules. expr uses metric keys; `*` = one alert per mount / service.
+# for: N  -> condition must hold N checks in a row (30 s interval: for 2 ~ 1 minute).
+#
+# Metric keys: up, cpu.percent, cpu.cores, mem.percent, swap.percent, load.1/5/15, load.per_core,
+#              disk.<mount>.percent, disk.<mount>.inode_percent, service.<name>.up, check.<name>
+
+rules:
+  - name: host_down
+    expr: up == 0
+    for: 2
+    severity: critical
+    summary: "Host unreachable over SSH"
+
+  - name: cpu_high
+    expr: cpu.percent > 90
+    for: 2
+    severity: critical
+    summary: "CPU {value:.0f}% for over a minute"
+
+  - name: memory_high
+    expr: mem.percent > 90
+    for: 2
+    severity: warning
+    summary: "Memory {value:.0f}%"
+
+  - name: load_high
+    expr: load.per_core > 2
+    for: 4
+    severity: warning
+    summary: "Load {value} per core"
+
+  - name: disk_warning
+    expr: disk.*.percent > 85 and disk.*.percent <= 95
+    severity: warning
+    summary: "Disk {target} {value:.0f}% full"
+
+  - name: disk_critical
+    expr: disk.*.percent > 95
+    severity: critical
+    summary: "Disk {target} {value:.0f}% full"
+
+  - name: inode_high
+    expr: disk.*.inode_percent > 90
+    severity: warning
+    summary: "Inodes on {target} {value:.0f}% used"
+
+  - name: service_down
+    expr: service.*.up == 0
+    severity: critical
+    summary: "Service {target} is not running"
+
+  - name: zombie_processes
+    expr: check.zombies > 10
+    for: 3
+    severity: warning
+    summary: "{value:.0f} zombie processes"
+
+  - name: rebooted
+    expr: check.uptime_s < 600
+    severity: warning
+    summary: "Host rebooted {value:.0f} s ago"
+
+  - name: filesystem_readonly
+    expr: check.ro_mounts > 0
+    severity: critical
+    summary: "Filesystem remounted read-only (disk error?)"

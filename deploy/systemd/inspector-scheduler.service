@@ -1,0 +1,22 @@
+[Unit]
+Description=DC Inspector central scheduler (notifications, watchdog, reports)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=inspector
+Group=inspector
+WorkingDirectory=/opt/dc-inspector
+EnvironmentFile=/etc/dc-inspector/central.env
+ExecStart=/opt/dc-inspector/venv/bin/python -m inspector.main scheduler
+Restart=always
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/dc-inspector
+
+[Install]
+WantedBy=multi-user.target

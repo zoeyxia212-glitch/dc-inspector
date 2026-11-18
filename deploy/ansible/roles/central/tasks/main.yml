@@ -1,0 +1,51 @@
+- name: Server configuration
+  ansible.builtin.copy:
+    src: "{{ inspector_home }}/src/config/{{ item }}"
+    dest: "{{ inspector_etc }}/{{ item }}"
+    remote_src: true
+    mode: "0640"
+    group: inspector
+  loop: [server.yaml, rules.yaml]
+  notify: restart inspector
+
+- name: Secrets (environment file, readable by the service account only)
+  ansible.builtin.template:
+    src: central.env.j2
+    dest: "{{ inspector_etc }}/central.env"
+    owner: root
+    group: inspector
+    mode: "0640"
+  no_log: true
+  notify: restart inspector
+
+- name: Database schema and collector tokens
+  ansible.builtin.shell: |
+    set -a; . {{ inspector_etc }}/central.env; set +a
+    {{ inspector_home }}/venv/bin/python -m inspector.main init
+    {% for name, token in vault_collector_tokens.items() %}
+    {{ inspector_home }}/venv/bin/python -m inspector.main add-collector {{ name }} --token "{{ token }}"
+    {% endfor %}
+  args:
+    chdir: "{{ inspector_home }}"
+  become_user: inspector
+  no_log: true
+  changed_when: false
+
+- name: systemd units
+  ansible.builtin.copy:
+    src: "{{ inspector_home }}/src/deploy/systemd/{{ item }}.service"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    remote_src: true
+  loop: [inspector-web, inspector-scheduler]
+  notify: restart inspector
+
+- name: Start services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: [inspector-web, inspector-scheduler]
+
+- ansible.builtin.set_fact:
+    inspector_services: [inspector-web, inspector-scheduler]

@@ -1,0 +1,42 @@
+- name: Packages
+  ansible.builtin.package:
+    name: [python3, python3-venv, git, openssh-client]
+    state: present
+
+- name: Service account
+  ansible.builtin.user:
+    name: inspector
+    system: true
+    home: "{{ inspector_data }}"
+    shell: /usr/sbin/nologin
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ inspector_home }}", owner: root, mode: "0755"}
+    - {path: "{{ inspector_data }}", owner: inspector, mode: "0750"}
+    - {path: "{{ inspector_etc }}", owner: root, mode: "0750"}
+
+- name: Application code (pinned version)
+  ansible.builtin.git:
+    repo: "{{ inspector_repo }}"
+    dest: "{{ inspector_home }}/src"
+    version: "v{{ inspector_version }}"
+  notify: restart inspector
+
+- name: Python virtualenv
+  ansible.builtin.pip:
+    requirements: "{{ inspector_home }}/src/requirements.txt"
+    virtualenv: "{{ inspector_home }}/venv"
+    virtualenv_command: python3 -m venv
+  notify: restart inspector
+
+- name: Link code into place
+  ansible.builtin.file:
+    src: "{{ inspector_home }}/src/inspector"
+    dest: "{{ inspector_home }}/inspector"
+    state: link

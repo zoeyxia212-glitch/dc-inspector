@@ -1,0 +1,23 @@
+[Unit]
+Description=DC Inspector regional collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=inspector
+Group=inspector
+WorkingDirectory=/opt/dc-inspector
+EnvironmentFile=/etc/dc-inspector/collector.env
+ExecStart=/opt/dc-inspector/venv/bin/python -m inspector.main agent --config /etc/dc-inspector/collector.yaml
+Restart=always
+RestartSec=5
+# SIGTERM finishes the current round; spooled data is sent after restart.
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/dc-inspector
+
+[Install]
+WantedBy=multi-user.target
