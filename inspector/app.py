@@ -13,7 +13,7 @@ from pathlib import Path
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
 
-from inspector import __version__, alerts, auth, inventory, lookup, metrics
+from inspector import __version__, alerts, auth, inventory, lookup, metrics, ops
 from inspector.config import DEFAULT_SERVER_CONFIG, REPORT_DIR, ServerSettings, load_server_config
 from inspector.db import DEFAULT_DB_PATH, connect, from_text, init_schema, to_text, transaction, utcnow
 from inspector.ingest import IngestError, ingest
@@ -135,6 +135,20 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     def health():
         db().execute("SELECT 1")
         return jsonify(status="ok", version=__version__)
+
+    @app.get("/metrics")
+    def prometheus():
+        """Self-monitoring for Prometheus. Bearer token if INSPECTOR_METRICS_TOKEN is set, else login."""
+        token = os.environ.get("INSPECTOR_METRICS_TOKEN")
+        header = request.headers.get("Authorization", "")
+        if token:
+            if not secrets.compare_digest(header, f"Bearer {token}"):
+                return Response("unauthorized\n", status=401, mimetype="text/plain")
+        elif current_user() is None:
+            return Response("login or INSPECTOR_METRICS_TOKEN required\n", status=401, mimetype="text/plain")
+        body_text = ops.prometheus_metrics(db(), settings.collector_stale_seconds,
+                                           None if conn is not None else db_path)
+        return Response(body_text, mimetype="text/plain; version=0.0.4")
 
     @app.get("/api/v1/me")
     @require()

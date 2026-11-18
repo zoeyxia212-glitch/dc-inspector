@@ -26,6 +26,7 @@ collection:                                # pushed to every collector via the A
 alerting:
   collector_stale_seconds: 120             # collector_down after 2 min without data
   watchdog_seconds: 30
+  rack_outage_min_hosts: 3                 # this many hosts down in one rack -> one rack_outage alert
   renotify_after_minutes: 30               # repeat unacknowledged critical alerts
 
 notifications:

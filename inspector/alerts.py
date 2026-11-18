@@ -152,7 +152,7 @@ def due_reminders(conn: sqlite3.Connection, after_minutes: int,
     rows = conn.execute(
         """SELECT id FROM alerts
            WHERE status = 'open' AND severity = 'critical' AND acked_at IS NULL AND silenced = 0
-             AND COALESCE(last_notified_at, opened_at) < ?""", (cutoff,)).fetchall()
+             AND parent_id IS NULL AND COALESCE(last_notified_at, opened_at) < ?""", (cutoff,)).fetchall()
     return [_event(conn, r["id"], "reminder") for r in rows]
 
 
@@ -196,3 +196,75 @@ def _resolve(conn, alert_id: int, now_text: str) -> dict:
 def _event(conn, alert_id: int, kind: str) -> dict:
     row = dict(conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,)).fetchone())
     return {"event": kind, **row}
+
+
+# ---------------------------------------------------------------- rack correlation
+RACK_RULE = "rack_outage"
+HOST_DOWN_RULE = "host_down"
+
+
+def _rack_of(conn: sqlite3.Connection, host: str) -> dict | None:
+    row = conn.execute(
+        """SELECT r.id, r.code, dc.code AS datacenter FROM devices d
+           JOIN racks r ON r.id = d.rack_id JOIN datacenters dc ON dc.id = r.datacenter_id
+           WHERE d.hostname = ?""", (host,)).fetchone()
+    return dict(row) if row else None
+
+
+def correlate_racks(conn: sqlite3.Connection, events: list[dict], min_hosts: int,
+                    now: datetime | None = None) -> list[dict]:
+    """Group simultaneous host_down alerts in one rack into a single rack_outage alert.
+
+    When `min_hosts` hosts in the same rack are down at once, the likely cause is shared
+    (top-of-rack switch, PDU, rack power), so one rack_outage alert is raised and notified,
+    and the per-host alerts are attached to it (parent_id) and not notified individually.
+    The rack alert resolves when none of its hosts is still down. Runs inside the ingest
+    transaction; returns the events that should be notified.
+    """
+    if min_hosts < 2:
+        return events
+    now_text = to_text(now or utcnow())
+    out, touched_racks = [], {}
+    for e in events:
+        if e["rule"] == HOST_DOWN_RULE:
+            rack = _rack_of(conn, e["host"])
+            if rack:
+                touched_racks[rack["code"]] = rack
+        out.append(e)
+
+    for code, rack in touched_racks.items():
+        rack_host = f"rack/{code}"
+        down = conn.execute(
+            """SELECT a.id, a.host, a.parent_id FROM alerts a
+               JOIN devices d ON d.hostname = a.host
+               WHERE a.rule = ? AND a.status = 'open' AND d.rack_id = ?""",
+            (HOST_DOWN_RULE, rack["id"])).fetchall()
+        parent = conn.execute("SELECT id FROM alerts WHERE host = ? AND rule = ? AND status = 'open'",
+                              (rack_host, RACK_RULE)).fetchone()
+
+        if len(down) >= min_hosts:
+            tor = conn.execute(
+                "SELECT hostname FROM devices WHERE rack_id = ? AND device_type = 'switch' LIMIT 1",
+                (rack["id"],)).fetchone()
+            summary = (f"{len(down)} hosts in rack {code} unreachable at the same time - "
+                       f"check top-of-rack switch {tor['hostname'] if tor else '(none recorded)'} and rack power/PDU")
+            if parent is None:
+                silenced = active_silence(conn, rack_host, RACK_RULE, now_text) is not None
+                parent_id = conn.execute(
+                    """INSERT INTO alerts (host, datacenter, rule, target, severity, summary, status, silenced,
+                                           opened_at, last_seen_at)
+                       VALUES (?, ?, ?, '', 'critical', ?, 'open', ?, ?, ?)""",
+                    (rack_host, rack["datacenter"], RACK_RULE, summary, int(silenced), now_text, now_text)).lastrowid
+                out.append(_event(conn, parent_id, "opened"))
+            else:
+                parent_id = parent["id"]
+                conn.execute("UPDATE alerts SET summary = ?, last_seen_at = ? WHERE id = ?",
+                             (summary, now_text, parent_id))
+            conn.executemany("UPDATE alerts SET parent_id = ? WHERE id = ?", [(parent_id, d["id"]) for d in down])
+            grouped = {d["id"] for d in down}
+            out = [e for e in out if not (e["id"] in grouped and e["event"] == "opened")]
+        elif parent is not None and not down:
+            out.append(_resolve(conn, parent["id"], now_text))
+
+    # Hosts grouped under a rack outage recover silently; the rack alert's resolution covers them.
+    return [e for e in out if not (e["event"] == "resolved" and e.get("parent_id"))]

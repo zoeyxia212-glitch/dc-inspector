@@ -73,6 +73,11 @@ they were collected, so a problem that started and ended during the gap is still
 right times. If one site goes silent → `collector_down` for that site; if *every* site goes silent
 at once → a single `ingest_stalled` alert on the central server instead of blaming every site.
 
+**Rack-aware correlation** — when several hosts in the same rack go down in the same round
+(default 3+), the likely cause is shared: top-of-rack switch, PDU or rack power. Instead of a storm of
+`host_down` alerts, one `rack_outage` alert is raised naming the rack's ToR switch; the host alerts are
+attached to it (still visible, not notified one by one) and the rack alert resolves when they all recover.
+
 **Notifications** — email (SMTP), 企业微信 WeCom robot, 钉钉 DingTalk robot (HMAC-signed), Slack.
 Routing by severity and data centre. Sent from an **outbox** with exponential-backoff retries, so a
 slow mail server never blocks ingest and nothing is lost on restart. Every alert carries its rack
@@ -125,21 +130,33 @@ docker compose stop collector-south # collector_down for sh-south only
   inspected hosts (creates a no-password, no-sudo `inspector` account and installs the site
   collector's key with `no-pty,no-port-forwarding`). Secrets come from Ansible Vault.
 - `deploy/systemd/` — hardened units (`ProtectSystem=strict`, `NoNewPrivileges`) for web,
-  scheduler and collector. Put the web service behind a TLS reverse proxy.
+  scheduler and collector, plus a daily backup timer. Put the web service behind a TLS reverse proxy.
 - On systemd hosts set `service_check: "systemctl is-active {name}"`; pin host keys with `known_hosts`.
+
+## Operating it
+
+- **Self-monitoring**: `GET /metrics` in Prometheus format — collector freshness and spool backlog,
+  open / unacknowledged critical alerts, notification backlog and age of the oldest undelivered
+  notification, hosts up/down, samples per hour, database size. Protected by `INSPECTOR_METRICS_TOKEN`
+  (bearer) or a logged-in session. *Who monitors the monitor* is answered by an external Prometheus.
+- **Schema migrations**: versioned in `PRAGMA user_version`; `init` (and every start) upgrades an
+  existing database in place, in a transaction, without losing data.
+- **Backups**: `python -m inspector.main backup DIR --keep 14` takes an online backup while the
+  server runs, verifies it with `integrity_check`, writes it atomically and prunes old copies
+  (systemd timer in `deploy/systemd/`). `verify-backup FILE` is the restore drill.
 
 ## Development
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest                                   # 210 tests
+python -m pytest                                   # 223 tests
 python -m inspector.main init                      # schema + mock inventory
 python -m inspector.main create-user me --role admin
 python -m inspector.main server                    # http://127.0.0.1:8000
 ```
 
-CLI: `init | create-user | add-collector | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices`
+CLI: `init | create-user | add-collector | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices | backup | verify-backup`
 
 ## Design decisions and trade-offs
 
@@ -168,10 +185,11 @@ inspector/
   scheduler.py  delivery, watchdog, reminders, daily report     report.py    HTML report, retention
   lookup.py     CMDB search and cabling                         seed.py      mock inventory
   metrics.py    host snapshots, metric history                  inventory.py rack elevation, CSV import/export
+  ops.py        Prometheus self-metrics, verified backups
 config/         server.yaml, rules.yaml, collectors/*.yaml
 docker/         host image (sshd, nginx, stress-ng), central bootstrap
 deploy/         ansible/, systemd/
-tests/          210 pytest tests
+tests/          223 pytest tests
 ```
 
 Python 3.10+ · Flask · SQLite · OpenSSH / paramiko · Jinja2 · pytest · Docker Compose · Ansible · systemd

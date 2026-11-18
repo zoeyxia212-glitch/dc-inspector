@@ -10,6 +10,8 @@ Central server
     python -m inspector.main check-config              # validate server.yaml + rules.yaml
     python -m inspector.main export-devices inventory.csv
     python -m inspector.main import-devices inventory.csv [--dry-run]   # upsert from CMDB export
+    python -m inspector.main backup /var/backups/dc-inspector [--keep 7]  # online, verified backup
+    python -m inspector.main verify-backup "<file>"     # restore drill: open read-only and summarise
 
 Regional collector
     python -m inspector.main agent --config collector.yaml
@@ -55,7 +57,7 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="inspector", description=f"DC Inspector {__version__}")
     p.add_argument("command", choices=["init", "seed", "create-user", "add-collector", "server", "scheduler",
                                        "report", "check-config", "agent", "collect-once",
-                                       "import-devices", "export-devices"])
+                                       "import-devices", "export-devices", "backup", "verify-backup"])
     p.add_argument("name", nargs="?", help="username, collector name, or CSV file")
     p.add_argument("--role", default="viewer", choices=auth.ROLES)
     p.add_argument("--token", help="add-collector: use this token instead of generating one")
@@ -64,6 +66,7 @@ def main(argv=None) -> None:
     p.add_argument("--db", default=DEFAULT_DB_PATH)
     p.add_argument("--hours", type=int, default=24)
     p.add_argument("--dry-run", action="store_true", help="import-devices: validate only")
+    p.add_argument("--keep", type=int, default=7, help="backup: number of backups to keep")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args(argv)
@@ -94,8 +97,25 @@ def _collector_command(args) -> None:
 
 
 def _server_command(args) -> None:
+    from inspector import ops
+    if args.command == "verify-backup":
+        if not args.name:
+            sys.exit("Usage: verify-backup <backup file>")
+        result = ops.restore_check(args.name)
+        print(json.dumps(result))
+        sys.exit(0 if result["integrity"] == "ok" else 1)
+
     conn = connect(args.db)
-    init_schema(conn)
+    applied = init_schema(conn)
+    if applied:
+        log.info("Database migrated to schema version %s", applied[-1])
+
+    if args.command == "backup":
+        if not args.name:
+            sys.exit("Usage: backup <directory> [--keep N]")
+        path = ops.backup(conn, args.name, args.keep)
+        log.info("Backup written and verified: %s", path)
+        return
 
     if args.command == "check-config":
         s = load_server_config(args.server_config)

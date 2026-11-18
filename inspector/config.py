@@ -56,6 +56,7 @@ class ServerSettings:
     service_check: str = DEFAULT_SERVICE_CHECK
     collector_stale_seconds: int = 120
     watchdog_seconds: int = 30
+    rack_outage_min_hosts: int = 3
     renotify_after_minutes: int = 30
     report_hour: int = 8
     timezone: str = "Pacific/Auckland"
@@ -95,6 +96,7 @@ def load_server_config(path=DEFAULT_SERVER_CONFIG) -> ServerSettings:
         service_check=collection.get("service_check", DEFAULT_SERVICE_CHECK),
         collector_stale_seconds=int(alerting.get("collector_stale_seconds", 120)),
         watchdog_seconds=int(alerting.get("watchdog_seconds", 30)),
+        rack_outage_min_hosts=int(alerting.get("rack_outage_min_hosts", 3)),
         renotify_after_minutes=int(alerting.get("renotify_after_minutes", 30)),
         report_hour=int(report.get("hour", 8)),
         timezone=report.get("timezone", "Pacific/Auckland"),

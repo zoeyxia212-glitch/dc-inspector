@@ -206,8 +206,44 @@ def transaction(conn: sqlite3.Connection):
     conn.execute("COMMIT")
 
 
-def init_schema(conn: sqlite3.Connection) -> None:
+# Schema migrations, applied in order and recorded in PRAGMA user_version.
+# Never edit a released migration: add a new one. SCHEMA above is version 1.
+MIGRATIONS: list[tuple[int, str]] = [
+    (2, """
+        -- Rack-level correlation: child host_down alerts point at the rack_outage alert.
+        ALTER TABLE alerts ADD COLUMN parent_id INTEGER REFERENCES alerts(id);
+        CREATE INDEX IF NOT EXISTS idx_alerts_parent ON alerts(parent_id);
+    """),
+]
+SCHEMA_VERSION = max([1] + [v for v, _ in MIGRATIONS])
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def init_schema(conn: sqlite3.Connection) -> list[int]:
+    """Create missing tables, then apply pending migrations. Returns the versions applied."""
     conn.executescript(SCHEMA)
+    current = schema_version(conn) or 1        # databases from before migrations existed are version 1
+    applied = []
+    for version, sql in MIGRATIONS:
+        if version <= current:
+            continue
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in (x.strip() for x in sql.split(";")):
+                if statement and not all(line.strip().startswith("--") for line in statement.splitlines()):
+                    conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {int(version)}")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+        applied.append(version)
+    if current == 1 and not applied and schema_version(conn) == 0:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    return applied
 
 
 def utcnow() -> datetime:

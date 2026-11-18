@@ -82,6 +82,7 @@ def ingest(conn: sqlite3.Connection, settings: ServerSettings, collector: str, p
         # (the message carries both times), instead of two stale notifications.
         resolved_ids = {e["id"] for e in events if e["event"] == "resolved"}
         events = [e for e in events if not (e["event"] == "opened" and e["id"] in resolved_ids)]
+        events = alerts.correlate_racks(conn, events, settings.rack_outage_min_hosts, now)
         notify.enqueue(conn, events, settings.channels, location_of, now, settings.public_url)
 
         conn.execute(
