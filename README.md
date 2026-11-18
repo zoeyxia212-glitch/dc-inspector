@@ -73,6 +73,19 @@ they were collected, so a problem that started and ended during the gap is still
 right times. If one site goes silent → `collector_down` for that site; if *every* site goes silent
 at once → a single `ingest_stalled` alert on the central server instead of blaming every site.
 
+**Failure diagnosis** — when SSH fails, the collector classifies the error and pings the host, so the
+alert tells people *who* should act, not just "something is wrong":
+
+| SSH error | ping | Alert | Who acts |
+|---|---|---|---|
+| timeout / unreachable | no reply (or ping unavailable) | `host_down` | hardware / network |
+| refused / timeout | replies | `ssh_down` | host admin (sshd, firewall) |
+| permission denied | any | `ssh_auth_failed` (warning) | whoever changed keys/accounts |
+| host key changed | any | `host_key_changed` | security: reinstall or MITM? |
+
+Rule expressions use three-valued logic like SQL `NULL` (`false and <no data>` = false), so a
+recovered host with no ping data still resolves its alert, while missing data alone never does.
+
 **Rack-aware correlation** — when several hosts in the same rack go down in the same round
 (default 3+), the likely cause is shared: top-of-rack switch, PDU or rack power. Instead of a storm of
 `host_down` alerts, one `rack_outage` alert is raised naming the rack's ToR switch; the host alerts are
@@ -150,13 +163,27 @@ docker compose stop collector-south # collector_down for sh-south only
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest                                   # 223 tests
+python -m pytest                                   # 251 tests
 python -m inspector.main init                      # schema + mock inventory
 python -m inspector.main create-user me --role admin
 python -m inspector.main server                    # http://127.0.0.1:8000
 ```
 
 CLI: `init | create-user | add-collector | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices | backup | verify-backup`
+
+## Performance
+
+`python scripts/benchmark.py --hosts 10000 --rounds 6` (2-vCPU cloud VM, SQLite WAL, ~17 metrics per host, 1% of hosts failing):
+
+| Measured | 2,000 hosts | 10,000 hosts |
+|---|---|---|
+| Ingest per 500-host batch (store + rules + rack correlation + notifications), p50 | 106 ms | 104 ms |
+| Full round, all hosts | 0.44 s | 2.1 s (7% of a 30 s interval) |
+| Throughput | ~4,500 host-samples/s | ~4,700 host-samples/s |
+| Latest status of all hosts (monitoring page API) | 39 ms | 172 ms |
+
+Ingest cost per host stays flat as the fleet grows. Beyond ~10k hosts per central server the next
+steps would be PostgreSQL / a time-series store for samples and paginating the host list.
 
 ## Design decisions and trade-offs
 
@@ -169,6 +196,10 @@ CLI: `init | create-user | add-collector | server | scheduler | report | check-c
   the SQL and data model are portable.
 - **One SSH session per host per round**, parallel per site, bounded by timeouts: a dead host never
   delays the others. Two SSH backends: system `ssh` (keys, reuses ssh config) or paramiko.
+- **SSH connection reuse** (OpenSSH `ControlMaster`): measured on real sshd, per-host SSH overhead
+  dropped from 149 ms to 29 ms after the first round. Unix socket paths are limited to 104 bytes, and a
+  too-long control path makes ssh fail outright — so the path is validated and reuse falls back to a
+  normal connection rather than breaking inspection.
 - **Safety**: service names and mount paths are validated and shell-quoted; custom check commands
   can only be defined in the server config file (by admins), never via the UI or API; ingest
   validates every field and rejects timestamps from the future (clock skew).
@@ -189,7 +220,8 @@ inspector/
 config/         server.yaml, rules.yaml, collectors/*.yaml
 docker/         host image (sshd, nginx, stress-ng), central bootstrap
 deploy/         ansible/, systemd/
-tests/          223 pytest tests
+scripts/        benchmark.py (load test)
+tests/          251 pytest tests
 ```
 
 Python 3.10+ · Flask · SQLite · OpenSSH / paramiko · Jinja2 · pytest · Docker Compose · Ansible · systemd

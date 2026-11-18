@@ -13,6 +13,9 @@ Restart=always
 RestartSec=5
 # SIGTERM finishes the current round; spooled data is sent after restart.
 TimeoutStopSec=30
+# Short private directory for SSH control sockets (connection reuse)
+RuntimeDirectory=dc-inspector
+RuntimeDirectoryMode=0700
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only

@@ -28,9 +28,21 @@ def test_missing_metric_is_no_data_not_false():
     assert expr.evaluate(node, V) is None
 
 
-def test_no_data_propagates_through_and_or():
-    assert expr.evaluate(expr.parse("cpu.percent > 90 and swap.percent > 50"), V) is None
-    assert expr.evaluate(expr.parse("cpu.percent > 90 or swap.percent > 50"), V) is None
+def test_three_valued_logic():
+    ev = lambda text: expr.evaluate(expr.parse(text), V)
+    assert ev("cpu.percent > 90 and swap.percent > 50") is None      # true AND unknown = unknown
+    assert ev("cpu.percent < 90 and swap.percent > 50") is False     # false AND unknown = false
+    assert ev("swap.percent > 50 and cpu.percent < 90") is False     # order does not matter
+    assert ev("cpu.percent > 90 or swap.percent > 50") is True       # true OR unknown = true
+    assert ev("cpu.percent < 90 or swap.percent > 50") is None       # false OR unknown = unknown
+    assert ev("not (swap.percent > 50)") is None
+
+
+def test_recovered_host_resolves_host_down():
+    """Regression: once SSH works, ping/ssh.error are absent; host_down must evaluate to False."""
+    node = expr.parse('up == 0 and ping.up != 1 and ssh.error != "auth_failed"')
+    assert expr.evaluate(node, {"up": 1.0, "cpu.percent": 5.0}) is False
+    assert expr.evaluate(node, {"up": 0.0, "ping.up": 0.0, "ssh.error": "timeout"}) is True
 
 
 def test_ordering_text_against_number_is_no_data():

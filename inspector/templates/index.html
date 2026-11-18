@@ -134,6 +134,13 @@ const pct = v => v === null || v === undefined ? "–" :
 const when = t => t ? new Date(t).toLocaleString() : "";
 const ago = t => { if (!t) return "never"; const s = Math.round((Date.now() - new Date(t)) / 1000);
   return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s/60)} min ago` : `${Math.round(s/3600)} h ago`; };
+// Why a host is not inspectable: who should act (network/hardware, host admin, security).
+function diag(x) {
+  if (x.ssh_error === "auth_failed") return "SSH LOGIN REJECTED";
+  if (x.ssh_error === "host_key") return "HOST KEY CHANGED";
+  if (x.ping === 1) return `SSH DOWN (ping ok, ${x.ssh_error || "error"})`;
+  return x.ping === -1 ? "DOWN (no ping data)" : "DOWN (no ping)";
+}
 function toast(msg) { const t = document.getElementById("toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => t.style.display = "none", 3000); }
 
 async function api(path, method = "GET", data) {
@@ -185,7 +192,7 @@ async function loadMonitor() {
     `<table><tr><th>Host</th><th>Location</th><th>Collector</th><th>Status</th><th>CPU</th><th>Memory</th><th>Load/core</th>
       <th>Disk</th><th>Services down</th><th>Alerts</th><th>Last check</th></tr>` +
     h.hosts.map(x => `<tr class="hostlink" data-asset="${esc(x.asset_id)}"><td>${esc(x.host)}</td><td>${esc(x.location)}</td><td>${esc(x.collector)}</td>
-      <td class="${!x.up ? "bad" : x.stale ? "stale" : "ok"}">${!x.up ? "DOWN" : x.stale ? "STALE" : "up"}</td>
+      <td class="${!x.up ? "bad" : x.stale ? "stale" : "ok"}" title="${esc(x.error)}">${!x.up ? diag(x) : x.stale ? "STALE" : "up"}</td>
       <td>${pct(x.cpu)}</td><td>${pct(x.mem)}</td><td>${x.load_per_core ?? "–"}</td>
       <td>${Object.entries(x.disks).map(([m, v]) => `${esc(m)} ${pct(v)}`).join("<br>") || "–"}</td>
       <td class="${x.services_down.length ? "bad" : ""}">${esc(x.services_down.join(", ")) || "–"}</td>
@@ -268,7 +275,7 @@ async function showDetail(assetId) {
   let status = '<p class="muted">Not monitored (no inspection data for this device).</p>';
   if (s) {
     status = `<div class="cards">
-      <div class="card ${s.up ? "" : "bad"}"><b>${s.up ? (s.stale ? '<span class="stale">STALE</span>' : '<span class="ok">UP</span>') : '<span class="bad">DOWN</span>'}</b><br>
+      <div class="card ${s.up ? "" : "bad"}"><b>${s.up ? (s.stale ? '<span class="stale">STALE</span>' : '<span class="ok">UP</span>') : `<span class="bad">${diag(s)}</span>`}</b><br>
         last check ${ago(s.collected_at)} via ${esc(s.collector)}</div>
       <div class="card"><b>CPU</b><br>${pct(s.cpu)}</div><div class="card"><b>Memory</b><br>${pct(s.mem)}</div>
       <div class="card"><b>Disk</b><br>${Object.entries(s.disks).map(([k, v]) => `${esc(k)} ${pct(v)}`).join("<br>") || "–"}</div>

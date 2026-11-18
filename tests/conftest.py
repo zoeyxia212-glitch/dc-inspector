@@ -61,14 +61,16 @@ def push(conn, settings):
     def _push(step, host=HOST, up=True, values=None, datacenter=None, **overrides):
         sample = {"host": host, "datacenter": datacenter or host[:4].upper(),
                   "collected_at": to_text(at(step)), "up": int(up),
-                  "values": (values if values is not None else healthy(**overrides)) if up else {},
+                  "values": (values if values is not None else healthy(**overrides)) if up
+                            else (values if values is not None else {"ssh.error": "timeout", "ping.up": 0.0}),
                   "error": None if up else "ssh: connect to host: Connection timed out"}
         return ingest(conn, settings, "sh-north", {"samples": [sample]}, now=at(step))
 
     def _batch(step, hosts: dict):
         """hosts: {hostname: up?} in one ingest request, like a real collection round."""
         samples = [{"host": h, "datacenter": h[:4].upper(), "collected_at": to_text(at(step)), "up": int(up),
-                    "values": healthy() if up else {}, "error": None if up else "Connection timed out"}
+                    "values": healthy() if up else {"ssh.error": "timeout", "ping.up": 0.0},
+                    "error": None if up else "Connection timed out"}
                    for h, up in hosts.items()]
         return ingest(conn, settings, "sh-north", {"samples": samples}, now=at(step))
 

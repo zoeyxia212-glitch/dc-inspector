@@ -6,6 +6,7 @@ spool_path: {{ inspector_data }}/spool.db
 ssh:
   client: openssh
   timeout: 10
+  control_dir: /run/dc-inspector/ssh
   known_hosts: {{ inspector_data }}/known_hosts
 defaults:
   username: inspector

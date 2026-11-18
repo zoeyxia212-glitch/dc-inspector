@@ -194,7 +194,8 @@ def test_default_summary_shows_value_and_condition():
 def batch(*rounds, host=HOST):
     """rounds: (step, up, overrides) -> one ingest payload, like a collector flushing its spool."""
     return {"samples": [{"host": host, "datacenter": "SH01", "collected_at": to_text(at(step)), "up": int(up),
-                         "values": healthy(**over) if up else {}} for step, up, over in rounds]}
+                         "values": healthy(**over) if up else {"ssh.error": "timeout", "ping.up": 0.0}}
+                        for step, up, over in rounds]}
 
 
 def test_spooled_rounds_are_evaluated_in_order_with_their_own_times(conn, settings):

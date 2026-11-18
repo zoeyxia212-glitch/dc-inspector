@@ -1,6 +1,6 @@
 # One image for both roles: central (web / scheduler) and collector (agent).
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client iputils-ping \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 999 --home /var/lib/inspector --create-home inspector
 WORKDIR /app

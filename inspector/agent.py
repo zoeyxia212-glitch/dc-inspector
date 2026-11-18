@@ -7,6 +7,7 @@
     and delivered later (the server de-duplicates re-sent samples)
 """
 import json
+import os
 import logging
 import sqlite3
 import threading
@@ -91,7 +92,7 @@ def ssh_runner_factory(settings: CollectorSettings) -> RunnerFactory:
     def make(host):
         if settings.ssh_client == "openssh":
             return OpenSSHRunner(host.address, host.port, host.username, host.key_file,
-                                 settings.ssh_timeout, settings.known_hosts)
+                                 settings.ssh_timeout, settings.known_hosts, settings.ssh_control_dir)
         return SSHRunner(host.address, host.port, host.username, host.password, host.key_file,
                          settings.ssh_timeout, settings.known_hosts)
     return make
@@ -104,6 +105,8 @@ class Agent:
         self.client = client or CentralClient(settings.central_url, settings.token)
         self.runner_factory = runner_factory or ssh_runner_factory(settings)
         self.spool = spool or Spool(settings.spool_path, settings.spool_max_batches)
+        if settings.ssh_control_dir:
+            os.makedirs(settings.ssh_control_dir, mode=0o700, exist_ok=True)
         self.remote = self.spool.get("remote_config") or dict(DEFAULT_REMOTE_CONFIG)
         self._config_fetched_at = None
 

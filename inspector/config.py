@@ -137,6 +137,7 @@ class CollectorSettings:
     ssh_client: str = "openssh"                # openssh (system ssh, keys) | paramiko
     ssh_timeout: int = 10
     known_hosts: str | None = None
+    ssh_control_dir: str | None = None         # enables SSH connection reuse (openssh client)
     max_workers: int = 20
     spool_path: str = "spool.db"
     spool_max_batches: int = 20000             # ~1 week at 30 s; oldest dropped beyond this
@@ -156,6 +157,10 @@ def load_collector_config(path) -> CollectorSettings:
     except TypeError as exc:
         raise ConfigError(f"Bad host entry: {exc}") from exc
     _unique([h.name for h in hosts], "host")
+    control_dir = ssh.get("control_dir")
+    if control_dir and len(str(control_dir)) > 46:
+        raise ConfigError(f"ssh.control_dir is too long ({len(str(control_dir))} chars, max 46): Unix socket "
+                          "paths are limited to 104 bytes; use a short path such as /run/inspector/ssh")
     if ssh.get("client", "openssh") not in ("openssh", "paramiko"):
         raise ConfigError("ssh.client must be openssh or paramiko")
     for key in ("name", "central_url"):
@@ -165,7 +170,8 @@ def load_collector_config(path) -> CollectorSettings:
         name=raw["name"], central_url=raw["central_url"].rstrip("/"), hosts=hosts,
         token_env=raw.get("token_env", "INSPECTOR_COLLECTOR_TOKEN"),
         ssh_client=ssh.get("client", "openssh"), ssh_timeout=int(ssh.get("timeout", 10)),
-        known_hosts=ssh.get("known_hosts"), max_workers=int(raw.get("max_workers", 20)),
+        known_hosts=ssh.get("known_hosts"), ssh_control_dir=ssh.get("control_dir"),
+        max_workers=int(raw.get("max_workers", 20)),
         spool_path=raw.get("spool_path", "spool.db"),
         spool_max_batches=int(raw.get("spool_max_batches", 20000)),
         config_refresh_seconds=int(raw.get("config_refresh_seconds", 300)),

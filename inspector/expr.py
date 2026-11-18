@@ -154,7 +154,35 @@ def keys(node: Node) -> list[str]:
 
 
 def evaluate(node: Node, values: dict, target: str = "") -> bool | None:
-    """True/False, or None if a needed metric is missing."""
+    """True/False, or None if a needed metric is missing.
+
+    Three-valued (Kleene) logic, like SQL NULL: `False and <no data>` is False and
+    `True or <no data>` is True, because the missing part cannot change the result.
+    Otherwise a missing metric gives None, which never resolves an alert by accident.
+    """
+    return _tri(node, values, target)
+
+
+def _tri(node: Node, values: dict, target: str) -> bool | None:
+    if node.kind == "and":
+        left = _tri(node.left, values, target)
+        if left is False:
+            return False
+        right = _tri(node.right, values, target)
+        if right is False:
+            return False
+        return None if left is None or right is None else True
+    if node.kind == "or":
+        left = _tri(node.left, values, target)
+        if left is True:
+            return True
+        right = _tri(node.right, values, target)
+        if right is True:
+            return True
+        return None if left is None or right is None else False
+    if node.kind == "not":
+        inner = _tri(node.left, values, target)
+        return None if inner is None else not inner
     try:
         return bool(_eval(node, values, target))
     except NoData:

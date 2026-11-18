@@ -17,6 +17,7 @@ def snapshot(row: sqlite3.Row, values: dict, stale_before: str, asset: dict | No
         "host": row["host"], "asset_id": asset["asset_id"] if asset else None,
         "datacenter": row["datacenter"], "collector": row["collector"],
         "collected_at": row["collected_at"], "up": bool(row["up"]), "error": row["error"],
+        "ssh_error": values.get("ssh.error"), "ping": values.get("ping.up"),
         "stale": row["collected_at"] < stale_before,
         "cpu": values.get("cpu.percent"), "mem": values.get("mem.percent"),
         "load_per_core": values.get("load.per_core"),
