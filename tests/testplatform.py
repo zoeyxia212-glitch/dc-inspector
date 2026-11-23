@@ -259,9 +259,10 @@ def csp_sources(header: str, directive: str) -> list[str]:
 def test_docs_page_allows_its_cdn_only_there(app, login):
     docs = app.test_client().get("/api/docs")
     assert docs.status_code == 200
-    assert "https://unpkg.com" in csp_sources(docs.headers["Content-Security-Policy"], "script-src")
+    docs_scripts = csp_sources(docs.headers["Content-Security-Policy"], "script-src")
+    assert docs_scripts == ["'self'", "https://unpkg.com", "'unsafe-inline'"]
     home = login("vera").get("/").headers["Content-Security-Policy"]
-    assert "https://unpkg.com" not in csp_sources(home, "script-src")
+    assert csp_sources(home, "script-src") == ["'self'", "'unsafe-inline'"]
 
 
 def test_log_safe_neutralises_newlines():
