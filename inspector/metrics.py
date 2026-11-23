@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from inspector.db import to_text, utcnow
+from inspector.errors import InputError
 
 KEY_RE = re.compile(r"^[A-Za-z0-9_./@:-]{1,120}$")
 MAX_KEYS = 10
@@ -87,9 +88,9 @@ def history(
 ) -> dict:
     """{key: [[time, value], ...]} for numeric metrics, plus 'up'. Downsampled by averaging."""
     if not keys or len(keys) > MAX_KEYS or not all(KEY_RE.match(k) for k in keys):
-        raise ValueError(f"Give 1-{MAX_KEYS} metric keys like cpu.percent")
+        raise InputError(f"Give 1-{MAX_KEYS} metric keys like cpu.percent")
     if not 1 <= hours <= 24 * 31:
-        raise ValueError("hours must be between 1 and 744")
+        raise InputError("hours must be between 1 and 744")
     since = to_text((now or utcnow()) - timedelta(hours=hours))
     series: dict[str, list] = {k: [] for k in keys}
     series["up"] = [

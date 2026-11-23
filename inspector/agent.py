@@ -110,6 +110,7 @@ def ssh_runner_factory(settings: CollectorSettings) -> RunnerFactory:
                 settings.ssh_timeout,
                 settings.known_hosts,
                 settings.ssh_control_dir,
+                strict_host_keys=settings.host_key_policy == "strict",
             )
         return SSHRunner(
             host.address,
@@ -119,6 +120,7 @@ def ssh_runner_factory(settings: CollectorSettings) -> RunnerFactory:
             host.key_file,
             settings.ssh_timeout,
             settings.known_hosts,
+            strict_host_keys=settings.host_key_policy == "strict",
         )
 
     return make

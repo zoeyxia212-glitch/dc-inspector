@@ -42,6 +42,7 @@ from inspector.db import (
     transaction,
     utcnow,
 )
+from inspector.errors import InputError, int_arg
 from inspector.ingest import IngestError, ingest
 from inspector.logs import request_id_var
 
@@ -301,11 +302,11 @@ def create_app(
                     db(),
                     current_user()["id"],
                     str(data.get("name", "")),
-                    data.get("role"),
-                    int(data.get("expires_days", 90)),
+                    data.get("role") if isinstance(data.get("role"), str) else None,
+                    int_arg(data.get("expires_days", 90), "expires_days", 1, auth.MAX_TOKEN_DAYS),
                 )
                 audit("token_create", f"{created['name']} ({created['role']}, expires {created['expires_at']})")
-        except (auth.AuthError, ValueError, TypeError) as exc:
+        except (auth.AuthError, InputError) as exc:
             return jsonify(error=str(exc)), 400
         return jsonify(created), 201
 
@@ -419,9 +420,9 @@ def create_app(
     def host_history(host):
         keys = [k for k in request.args.get("keys", "cpu.percent,mem.percent").split(",") if k]
         try:
-            hours = int(request.args.get("hours", 24))
+            hours = int_arg(request.args.get("hours", 24), "hours", 1, 744)
             series = metrics.history(db(), host, keys, hours)
-        except ValueError as exc:
+        except InputError as exc:
             return jsonify(error=str(exc)), 400
         return jsonify(host=host, hours=hours, series=series)
 
@@ -472,8 +473,11 @@ def create_app(
     def create_silence():
         data = body()
         try:
-            starts = from_text(data["starts_at"]) if data.get("starts_at") else utcnow()
-            ends = starts + timedelta(minutes=int(data["duration_minutes"]))
+            try:
+                starts = from_text(str(data["starts_at"])) if data.get("starts_at") else utcnow()
+            except ValueError:
+                raise InputError("starts_at must look like 2026-11-23T01:00:00Z") from None
+            ends = starts + timedelta(minutes=int_arg(data.get("duration_minutes"), "duration_minutes", 1, 43200))
             with transaction(db()):
                 sid = alerts.add_silence(
                     db(),
@@ -489,7 +493,7 @@ def create_app(
                     f"#{sid} {data.get('host_pattern')} {data.get('rule_pattern', '*')} "
                     f"{data.get('duration_minutes')}min: {data.get('reason')}",
                 )
-        except (KeyError, ValueError, TypeError) as exc:
+        except InputError as exc:
             return jsonify(error=f"Invalid silence: {exc}"), 400
         return jsonify(id=sid), 201
 
