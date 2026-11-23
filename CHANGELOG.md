@@ -22,6 +22,9 @@ All notable changes are documented here. The format follows
   read-only root filesystem, probes, resource limits, default-deny NetworkPolicies, collector with
   unprivileged ping; static tests keep them consistent with the code.
 
+### Security
+- Upgrade paramiko to 5.x (PYSEC-2026-2858 / CVE-2026-44405: SHA-1 allowed for RSA keys).
+
 ## [2.1.0] - 2026-11-23
 
 ### Added

@@ -28,7 +28,7 @@ def test_paramiko_trust_on_first_use_records_and_reuses_key(tmp_path):
     from inspector.sshclient import trust_on_first_use_policy
 
     path = tmp_path / "known_hosts"
-    key = paramiko.RSAKey.generate(1024)
+    key = paramiko.RSAKey.generate(2048)
     client = paramiko.SSHClient()
     trust_on_first_use_policy(str(path)).missing_host_key(client, "[10.1.1.11]:2201", key)
     saved = paramiko.HostKeys(str(path))
