@@ -27,6 +27,12 @@ What the project already does, so reports can focus on gaps:
 - **Central API**: role-based access (viewer / operator / admin), hashed passwords, account lockout,
   generic login errors, JSON-only writes (CSRF), session cookies `HttpOnly` + `SameSite=Lax`
   (+ `Secure` behind TLS). Collector tokens are stored as SHA-256 hashes and can be rotated.
+- **API tokens** for scripts: role never above the owner's, mandatory expiry (max 365 days),
+  revocable, stored as SHA-256 hashes, cannot be used to mint further tokens.
+- **HTTP hardening**: CSP, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, HSTS behind TLS,
+  `no-store` on API responses, generic 500 errors with a request ID, login rate limiting per address.
+- **Kubernetes**: restricted Pod Security, non-root, read-only root filesystem, all capabilities
+  dropped, default-deny NetworkPolicies.
 - **Audit log** of logins, alert acknowledgements, maintenance windows, user and inventory changes.
 - **Input handling**: ingest validates every field and rejects future timestamps; CSV import is
   validated and atomic; CSV export neutralises spreadsheet formulas (CSV injection).

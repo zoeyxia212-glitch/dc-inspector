@@ -1,0 +1,416 @@
+openapi: 3.0.3
+info:
+  title: DC Inspector API
+  version: "0.0.0"   # replaced with inspector.__version__ when served
+  description: |
+    Data-centre inspection, alerting and device lookup.
+
+    **Authentication**
+    - Browser: session cookie from `POST /login`.
+    - Scripts: personal API token, `Authorization: Bearer dci_...` (create one on the Account tab).
+      A token never has more rights than its owner and always expires.
+    - Collectors: per-site collector token on `/api/v1/collector/*` and `/api/v1/ingest`.
+
+    **Roles**: `viewer` < `operator` (acknowledge alerts, maintenance windows) < `admin` (users,
+    inventory import, audit log). Writes must be `application/json`.
+
+    Every response carries `X-Request-ID`; quote it when reporting a problem.
+  license: {name: MIT}
+
+servers:
+  - url: /
+
+tags:
+  - {name: health}
+  - {name: monitoring}
+  - {name: alerts}
+  - {name: inventory}
+  - {name: admin}
+  - {name: tokens}
+  - {name: collectors, description: Used by site collectors, not by people}
+
+security:
+  - session: []
+  - apiToken: []
+
+components:
+  securitySchemes:
+    session: {type: apiKey, in: cookie, name: session}
+    apiToken: {type: http, scheme: bearer, description: "Personal API token: dci_..."}
+    collectorToken: {type: http, scheme: bearer, description: Per-site collector token}
+    metricsToken: {type: http, scheme: bearer, description: "INSPECTOR_METRICS_TOKEN, for Prometheus"}
+  parameters:
+    AssetId: {name: asset_id, in: path, required: true, schema: {type: string, example: AST-000002}}
+  responses:
+    Unauthorized:
+      description: Not signed in, or the token is invalid, expired or revoked
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    Forbidden:
+      description: The role is not high enough
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    BadRequest:
+      description: Invalid input
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    NotFound:
+      description: Not found
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: {type: string}
+        request_id: {type: string}
+    Ok:
+      type: object
+      properties: {ok: {type: boolean}}
+    Device:
+      type: object
+      properties:
+        asset_id: {type: string}
+        hostname: {type: string}
+        ip: {type: string}
+        device_type: {type: string, enum: [server, switch]}
+        vendor: {type: string}
+        model: {type: string}
+        u_position: {type: integer}
+        status: {type: string, enum: [online, offline, maintenance]}
+        rack: {type: string}
+        datacenter: {type: string}
+    HostStatus:
+      type: object
+      properties:
+        host: {type: string}
+        asset_id: {type: string, nullable: true}
+        up: {type: boolean}
+        stale: {type: boolean}
+        ssh_error: {type: string, nullable: true, enum: [auth_failed, host_key, refused, dns, unreachable, timeout, other, null]}
+        ping: {type: number, nullable: true, description: "1 replies, 0 no reply, -1 ping unavailable"}
+        cpu: {type: number, nullable: true}
+        mem: {type: number, nullable: true}
+        disks: {type: object, additionalProperties: {type: number}}
+        services_down: {type: array, items: {type: string}}
+        open_alerts: {type: integer}
+        location: {type: string, nullable: true, example: SH01-A01 U2}
+    Alert:
+      type: object
+      properties:
+        id: {type: integer}
+        host: {type: string}
+        rule: {type: string}
+        target: {type: string}
+        severity: {type: string, enum: [warning, critical]}
+        summary: {type: string}
+        status: {type: string, enum: [open, resolved]}
+        silenced: {type: integer}
+        parent_id: {type: integer, nullable: true, description: rack_outage alert this host alert is grouped under}
+        opened_at: {type: string, format: date-time}
+        resolved_at: {type: string, format: date-time, nullable: true}
+        acked_by: {type: string, nullable: true}
+        location: {type: string, nullable: true}
+    Sample:
+      type: object
+      required: [host, collected_at, up]
+      properties:
+        host: {type: string}
+        datacenter: {type: string}
+        collected_at: {type: string, example: "2026-11-23T01:02:03Z"}
+        up: {type: integer, enum: [0, 1]}
+        duration_s: {type: number}
+        error: {type: string, nullable: true}
+        values:
+          type: object
+          additionalProperties: {oneOf: [{type: number}, {type: string}]}
+          example: {cpu.percent: 12.5, disk./data.percent: 71, service.nginx.up: 1}
+
+paths:
+  /health/live:
+    get:
+      tags: [health]
+      summary: Liveness probe (process answers)
+      security: []
+      responses: {"200": {description: Alive}}
+  /health/ready:
+    get:
+      tags: [health]
+      summary: Readiness probe (database reachable, schema current)
+      security: []
+      responses:
+        "200": {description: Ready}
+        "503": {description: Not ready; `checks` says why}
+  /health:
+    get:
+      tags: [health]
+      summary: Alias of /health/ready
+      security: []
+      responses: {"200": {description: Ready}, "503": {description: Not ready}}
+  /metrics:
+    get:
+      tags: [health]
+      summary: Prometheus self-monitoring metrics (text format)
+      security: [{session: []}, {metricsToken: []}]
+      responses:
+        "200": {description: Metrics, content: {text/plain: {schema: {type: string}}}}
+        "401": {description: Session or INSPECTOR_METRICS_TOKEN required}
+  /api/v1/openapi.json:
+    get:
+      tags: [health]
+      summary: This document
+      security: []
+      responses: {"200": {description: OpenAPI document}}
+  /api/v1/me:
+    get:
+      tags: [admin]
+      summary: The signed-in user (or the token's owner, with the token's role)
+      responses:
+        "200": {description: User}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+
+  /api/v1/hosts:
+    get:
+      tags: [monitoring]
+      summary: Latest status of every monitored host
+      responses:
+        "200":
+          description: Hosts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: {type: integer}
+                  hosts: {type: array, items: {$ref: "#/components/schemas/HostStatus"}}
+  /api/v1/hosts/{host}/history:
+    get:
+      tags: [monitoring]
+      summary: Metric history for one host (downsampled to <= 300 points per series)
+      parameters:
+        - {name: host, in: path, required: true, schema: {type: string}}
+        - {name: keys, in: query, schema: {type: string, default: "cpu.percent,mem.percent"}, description: Comma-separated metric keys (max 10)}
+        - {name: hours, in: query, schema: {type: integer, default: 24, minimum: 1, maximum: 744}}
+      responses:
+        "200": {description: "Series: {key: [[time, value], ...]}"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+  /api/v1/collectors:
+    get:
+      tags: [monitoring]
+      summary: Site collectors and whether they are reporting
+      responses: {"200": {description: Collectors}}
+  /api/v1/reports:
+    get:
+      tags: [monitoring]
+      summary: Daily report archive (file names; open with GET /reports/{name})
+      responses: {"200": {description: Report names}}
+
+  /api/v1/alerts:
+    get:
+      tags: [alerts]
+      summary: Alerts with rack location
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [open, resolved, all], default: open}}
+      responses:
+        "200":
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: {type: integer}
+                  alerts: {type: array, items: {$ref: "#/components/schemas/Alert"}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+  /api/v1/alerts/{alert_id}/ack:
+    post:
+      tags: [alerts]
+      summary: Acknowledge an alert (operator); stops reminders
+      parameters: [{name: alert_id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content: {application/json: {schema: {type: object, properties: {note: {type: string, example: "INC-42 replacing PSU"}}}}}
+      responses:
+        "200": {description: Acknowledged}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {description: Not open, or already acknowledged}
+  /api/v1/silences:
+    get:
+      tags: [alerts]
+      summary: Active and upcoming maintenance windows
+      responses: {"200": {description: Silences}}
+    post:
+      tags: [alerts]
+      summary: Start a maintenance window (operator)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [host_pattern, duration_minutes, reason]
+              properties:
+                host_pattern: {type: string, example: "sh03-*"}
+                rule_pattern: {type: string, default: "*"}
+                starts_at: {type: string, description: "UTC, default now"}
+                duration_minutes: {type: integer, maximum: 43200}
+                reason: {type: string, example: "CHG-2231 firmware upgrade"}
+      responses:
+        "201": {description: Created}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /api/v1/silences/{silence_id}:
+    delete:
+      tags: [alerts]
+      summary: End a maintenance window now (operator)
+      parameters: [{name: silence_id, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: Ended}, "404": {$ref: "#/components/responses/NotFound"}}
+
+  /api/v1/devices:
+    get:
+      tags: [inventory]
+      summary: Search devices by IP, IP prefix, rack, data centre or asset ID
+      parameters: [{name: q, in: query, required: true, schema: {type: string, example: "10.3.1."}}]
+      responses:
+        "200":
+          description: Devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: {type: integer}
+                  devices: {type: array, items: {$ref: "#/components/schemas/Device"}}
+        "400": {$ref: "#/components/responses/BadRequest"}
+  /api/v1/devices/{asset_id}:
+    get:
+      tags: [inventory]
+      summary: Device with ports, cabling, live monitoring and alert history
+      parameters: [{$ref: "#/components/parameters/AssetId"}]
+      responses: {"200": {description: Device}, "404": {$ref: "#/components/responses/NotFound"}}
+  /api/v1/racks/{code}:
+    get:
+      tags: [inventory]
+      summary: Rack elevation (42U) with each device's alert state
+      parameters: [{name: code, in: path, required: true, schema: {type: string, example: SH01-A01}}]
+      responses: {"200": {description: Rack}, "404": {$ref: "#/components/responses/NotFound"}}
+  /api/v1/inventory/export.csv:
+    get:
+      tags: [inventory]
+      summary: Export the inventory as CSV (formula cells neutralised)
+      responses: {"200": {description: CSV, content: {text/csv: {schema: {type: string}}}}}
+  /api/v1/inventory/import:
+    post:
+      tags: [inventory]
+      summary: Import a CMDB CSV (admin); validated and applied all-or-nothing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [csv]
+              properties:
+                csv: {type: string}
+                dry_run: {type: boolean, default: true}
+      responses:
+        "200": {description: "Result: created / updated / unchanged"}
+        "422": {description: Validation failed; nothing was changed; `errors` lists problems by line}
+        "403": {$ref: "#/components/responses/Forbidden"}
+
+  /api/v1/users:
+    get:
+      tags: [admin]
+      summary: Users (admin)
+      responses: {"200": {description: Users}, "403": {$ref: "#/components/responses/Forbidden"}}
+    post:
+      tags: [admin]
+      summary: Create a user (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: {type: string}
+                password: {type: string, minLength: 10}
+                role: {type: string, enum: [viewer, operator, admin], default: viewer}
+      responses: {"201": {description: Created}, "400": {$ref: "#/components/responses/BadRequest"}}
+  /api/v1/users/{username}:
+    patch:
+      tags: [admin]
+      summary: Change role, enable/disable, or reset password (admin)
+      parameters: [{name: username, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: {type: string, enum: [viewer, operator, admin]}
+                active: {type: boolean}
+                password: {type: string, minLength: 10}
+      responses: {"200": {description: Updated}, "400": {$ref: "#/components/responses/BadRequest"}}
+  /api/v1/audit:
+    get:
+      tags: [admin]
+      summary: Audit log (admin)
+      parameters: [{name: limit, in: query, schema: {type: integer, default: 200, maximum: 1000}}]
+      responses: {"200": {description: Entries}, "403": {$ref: "#/components/responses/Forbidden"}}
+
+  /api/v1/tokens:
+    get:
+      tags: [tokens]
+      summary: Your API tokens (admins can add ?all=1)
+      responses: {"200": {description: Tokens (the secret is never returned again)}}
+    post:
+      tags: [tokens]
+      summary: Create a personal API token; the secret is shown only in this response
+      description: Requires a browser session — a token cannot create another token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, example: ansible-inventory-sync}
+                role: {type: string, enum: [viewer, operator, admin], description: "Default: your role; cannot exceed it"}
+                expires_days: {type: integer, default: 90, minimum: 1, maximum: 365}
+      responses:
+        "201": {description: "Created: {id, name, role, token, expires_at}"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "403": {description: Called with a token instead of a session}
+  /api/v1/tokens/{token_id}:
+    delete:
+      tags: [tokens]
+      summary: Revoke a token (your own; admins any)
+      parameters: [{name: token_id, in: path, required: true, schema: {type: integer}}]
+      responses: {"200": {description: Revoked}, "404": {$ref: "#/components/responses/NotFound"}}
+
+  /api/v1/collector/config:
+    get:
+      tags: [collectors]
+      summary: Interval and custom checks for a collector
+      security: [{collectorToken: []}]
+      responses: {"200": {description: Config}, "401": {$ref: "#/components/responses/Unauthorized"}}
+  /api/v1/ingest:
+    post:
+      tags: [collectors]
+      summary: Submit samples (idempotent on host + collected_at; spooled rounds are replayed in order)
+      security: [{collectorToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [samples]
+              properties:
+                collector: {type: string}
+                version: {type: string}
+                host_count: {type: integer}
+                spooled: {type: integer}
+                samples: {type: array, maxItems: 2000, items: {$ref: "#/components/schemas/Sample"}}
+      responses:
+        "200": {description: "{accepted, duplicates, alert_events}"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}

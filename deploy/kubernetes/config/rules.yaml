@@ -1,0 +1,84 @@
+# Alert rules. expr uses metric keys; `*` = one alert per mount / service.
+# for: N  -> condition must hold N checks in a row (30 s interval: for 2 ~ 1 minute).
+#
+# Metric keys: up, ping.up (1 reply / 0 none / -1 ping unavailable), ssh.error (when up == 0:
+#              auth_failed, host_key, refused, dns, unreachable, timeout, other), cpu.percent, cpu.cores, mem.percent, swap.percent, load.1/5/15, load.per_core,
+#              disk.<mount>.percent, disk.<mount>.inode_percent, service.<name>.up, check.<name>
+
+rules:
+  - name: host_down                          # no SSH and no ping (or ping unavailable): host or network down
+    expr: up == 0 and ping.up != 1 and ssh.error != "auth_failed" and ssh.error != "host_key"
+    for: 2
+    severity: critical
+    summary: "Host unreachable (no SSH, no ping)"
+
+  - name: ssh_down                           # machine answers ping, SSH does not: sshd crashed / firewall
+    expr: up == 0 and ping.up == 1 and ssh.error != "auth_failed" and ssh.error != "host_key"
+    for: 2
+    severity: critical
+    summary: "Host answers ping but SSH fails - check sshd / firewall"
+
+  - name: ssh_auth_failed                    # credentials problem, not an outage: monitoring is blind
+    expr: ssh.error == "auth_failed"
+    for: 2
+    severity: warning
+    summary: "SSH login rejected - inspection key or account changed on the host"
+
+  - name: host_key_changed                   # reinstalled host, or someone in the middle: needs a human
+    expr: ssh.error == "host_key"
+    severity: critical
+    summary: "SSH host key changed - verify before trusting (reinstall or MITM)"
+
+  - name: cpu_high
+    expr: cpu.percent > 90
+    for: 2
+    severity: critical
+    summary: "CPU {value:.0f}% for over a minute"
+
+  - name: memory_high
+    expr: mem.percent > 90
+    for: 2
+    severity: warning
+    summary: "Memory {value:.0f}%"
+
+  - name: load_high
+    expr: load.per_core > 2
+    for: 4
+    severity: warning
+    summary: "Load {value} per core"
+
+  - name: disk_warning
+    expr: disk.*.percent > 85 and disk.*.percent <= 95
+    severity: warning
+    summary: "Disk {target} {value:.0f}% full"
+
+  - name: disk_critical
+    expr: disk.*.percent > 95
+    severity: critical
+    summary: "Disk {target} {value:.0f}% full"
+
+  - name: inode_high
+    expr: disk.*.inode_percent > 90
+    severity: warning
+    summary: "Inodes on {target} {value:.0f}% used"
+
+  - name: service_down
+    expr: service.*.up == 0
+    severity: critical
+    summary: "Service {target} is not running"
+
+  - name: zombie_processes
+    expr: check.zombies > 10
+    for: 3
+    severity: warning
+    summary: "{value:.0f} zombie processes"
+
+  - name: rebooted
+    expr: check.uptime_s < 600
+    severity: warning
+    summary: "Host rebooted {value:.0f} s ago"
+
+  - name: filesystem_readonly
+    expr: check.ro_mounts > 0
+    severity: critical
+    summary: "Filesystem remounted read-only (disk error?)"

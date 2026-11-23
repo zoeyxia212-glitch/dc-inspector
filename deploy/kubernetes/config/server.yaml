@@ -1,0 +1,65 @@
+# Central server configuration. Secrets are referenced by environment variable (*_env).
+public_url: http://localhost:8000          # used in notification links (env INSPECTOR_PUBLIC_URL overrides)
+rules_file: rules.yaml
+
+collection:                                # pushed to every collector via the API
+  interval_seconds: 30
+  # Process check works on any Linux. On systemd hosts use: "systemctl is-active {name}"
+  service_check: "pgrep -x {name} >/dev/null && echo active || echo inactive"
+  # Custom checks: run on every host, result stored as check.<name>, usable in rules.
+  # Only admins edit this file; commands run as the read-only inspection account.
+  checks:
+    - name: zombies
+      command: "grep -l '^State:.*Z' /proc/[0-9]*/status 2>/dev/null | wc -l"
+      type: number
+    - name: uptime_s
+      command: "cat /proc/uptime"
+      pattern: '^([\d.]+)'
+      type: number
+    - name: http_listening                 # anything listening on TCP 80 (hex 0050, state 0A)
+      command: "awk 'NR>1 && $4==\"0A\" {print $2}' /proc/net/tcp /proc/net/tcp6 2>/dev/null | grep -ci ':0050$'"
+      type: number
+    - name: ro_mounts                      # filesystems remounted read-only after disk errors
+      command: "awk '$4 ~ /^ro(,|$)/ && $2 ~ /^\\/(data|var|home)?$/' /proc/mounts | wc -l"
+      type: number
+
+alerting:
+  collector_stale_seconds: 120             # collector_down after 2 min without data
+  watchdog_seconds: 30
+  rack_outage_min_hosts: 3                 # this many hosts down in one rack -> one rack_outage alert
+  renotify_after_minutes: 30               # repeat unacknowledged critical alerts
+
+notifications:
+  channels:
+    - name: ops-email
+      type: email
+      min_severity: warning
+      daily_report: true
+      host: smtp.example.com
+      port: 587
+      starttls: true
+      username: inspector@example.com
+      password_env: SMTP_PASSWORD
+      from: inspector@example.com
+      to: [dc-ops@example.com]
+    - name: oncall-wecom                   # 企业微信群机器人
+      type: wecom
+      min_severity: critical
+      webhook_url_env: WECOM_WEBHOOK_URL
+    - name: noc-dingtalk                   # 钉钉机器人 (加签)
+      type: dingtalk
+      min_severity: critical
+      datacenters: [SH01, SH02, SH03, SH04, SH05]
+      webhook_url_env: DINGTALK_WEBHOOK_URL
+      secret_env: DINGTALK_SECRET
+    - name: team-slack
+      type: slack
+      min_severity: warning
+      webhook_url_env: SLACK_WEBHOOK_URL
+
+report:
+  hour: 8
+  timezone: Pacific/Auckland
+
+retention_days: 30
+audit_retention_days: 365

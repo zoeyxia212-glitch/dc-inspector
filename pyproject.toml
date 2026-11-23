@@ -52,7 +52,7 @@ version = { attr = "inspector.__version__" }
 include = ["inspector*"]
 
 [tool.setuptools.package-data]
-inspector = ["templates/*.html"]
+inspector = ["templates/*.html", "openapi.yaml"]
 
 # ------------------------------------------------------------------ tests
 [tool.pytest.ini_options]

@@ -6,6 +6,22 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Personal API tokens for scripts: scoped to a role no higher than the owner's, always expiring,
+  revocable, stored hashed, shown once; actions made with a token are audited with its name.
+- OpenAPI 3 document at `/api/v1/openapi.json` and interactive docs at `/api/docs`; a contract
+  test fails the build if a route is undocumented or a documented route does not exist.
+- Structured JSON logs (`LOG_FORMAT=json`), a request ID on every request (`X-Request-ID`,
+  propagated from load balancers) in logs and error responses, an access log per request.
+- Kubernetes-style health probes: `/health/live` (process) and `/health/ready` (database and
+  schema version).
+- Security headers (CSP, frame denial, nosniff, no-referrer, HSTS behind TLS) and `no-store` on API
+  responses; unhandled errors return a generic message with the request ID.
+- Login rate limiting per client address, alongside per-account lockout.
+- Kubernetes manifests (`deploy/kubernetes`, kustomize): restricted Pod Security, non-root,
+  read-only root filesystem, probes, resource limits, default-deny NetworkPolicies, collector with
+  unprivileged ping; static tests keep them consistent with the code.
+
 ## [2.1.0] - 2026-11-23
 
 ### Added

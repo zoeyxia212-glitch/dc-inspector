@@ -219,6 +219,25 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_alerts_parent ON alerts(parent_id);
     """,
     ),
+    (
+        3,
+        """
+        -- Personal API tokens for scripts and automation (the token itself is never stored).
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id           INTEGER PRIMARY KEY,
+            user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name         TEXT NOT NULL,
+            prefix       TEXT NOT NULL,
+            token_hash   TEXT NOT NULL UNIQUE,
+            role         TEXT NOT NULL CHECK (role IN ('viewer', 'operator', 'admin')),
+            created_at   TEXT NOT NULL,
+            expires_at   TEXT NOT NULL,
+            last_used_at TEXT,
+            revoked_at   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+    """,
+    ),
 ]
 SCHEMA_VERSION = max([1] + [v for v, _ in MIGRATIONS])
 

@@ -77,7 +77,7 @@ def test_different_racks_are_independent(conn, push):
 # ---------------------------------------------------------- migrations
 def test_fresh_database_is_at_latest_version():
     c = connect(":memory:")
-    assert init_schema(c) == [2] and schema_version(c) == SCHEMA_VERSION
+    assert init_schema(c) == [2, 3] and schema_version(c) == SCHEMA_VERSION == 3
     assert init_schema(c) == []  # idempotent
 
 
@@ -90,7 +90,7 @@ def test_existing_v1_database_is_upgraded_in_place(tmp_path):
     old.commit()
     old.close()
     c = connect(path)
-    assert init_schema(c) == [2]
+    assert init_schema(c) == [2, 3]
     row = c.execute("SELECT host, parent_id FROM alerts").fetchone()
     assert row["host"] == "h" and row["parent_id"] is None  # data kept, column added
 

@@ -143,6 +143,16 @@ docker compose start central        # spool is flushed, history back-filled
 docker compose stop collector-south # collector_down for sh-south only
 ```
 
+## Deploy on Kubernetes
+
+`deploy/kubernetes/` (kustomize): `kubectl apply -k deploy/kubernetes` after creating the secrets
+described in `secrets.example.yaml`. The namespace enforces the *restricted* Pod Security Standard;
+containers run as non-root with a read-only root filesystem and no capabilities; the central pod runs
+web and scheduler side by side on one volume (SQLite has one writer, so `replicas: 1` +
+`Recreate`); default-deny NetworkPolicies allow only users → central, collectors → central and
+collectors → SSH on their own site. Tests check the manifests against the code (probe paths, image
+tag, config copies, security context) without needing a cluster.
+
 ## Deploy on real servers
 
 - `deploy/ansible/` — playbook with roles for the central server, the site collectors, and the
@@ -152,7 +162,24 @@ docker compose stop collector-south # collector_down for sh-south only
   scheduler and collector, plus a daily backup timer. Put the web service behind a TLS reverse proxy.
 - On systemd hosts set `service_check: "systemctl is-active {name}"`; pin host keys with `known_hosts`.
 
+## API
+
+Every UI action is available over a documented REST API:
+[`/api/v1/openapi.json`](inspector/openapi.yaml), browsable at `/api/docs`. Scripts authenticate with
+**personal API tokens** created on the Account tab (`Authorization: Bearer dci_...`): a token is
+limited to a role no higher than its owner's, always expires, can be revoked, is stored only as a
+hash, and everything done with it is audited under the token's name.
+
+```bash
+curl -H "Authorization: Bearer $DCI_TOKEN" https://dc-inspector.example.com/api/v1/alerts?status=open
+```
+
 ## Operating it
+
+- **Health probes**: `/health/live` (process answers) and `/health/ready` (database reachable,
+  schema current) — liveness deliberately ignores the database so a slow disk causes no restart loop.
+- **Logs**: `LOG_FORMAT=json` for log shippers. Each request gets an `X-Request-ID` (or keeps the
+  one from the load balancer), which appears in every log line and in error responses.
 
 - **Self-monitoring**: `GET /metrics` in Prometheus format — collector freshness and spool backlog,
   open / unacknowledged critical alerts, notification backlog and age of the oldest undelivered
@@ -170,7 +197,7 @@ docker compose stop collector-south # collector_down for sh-south only
 python -m venv .venv && source .venv/bin/activate
 make install                                       # pip install -e ".[dev]"
 make check                                         # lint, format, types, tests + coverage gate (what CI runs)
-python -m pytest                                   # 268 tests
+python -m pytest                                   # 307 tests
 python -m inspector.main init                      # schema + mock inventory
 python -m inspector.main create-user me --role admin
 python -m inspector.main server                    # http://127.0.0.1:8000
@@ -229,12 +256,13 @@ inspector/
   scheduler.py  delivery, watchdog, reminders, daily report     report.py    HTML report, retention
   lookup.py     CMDB search and cabling                         seed.py      mock inventory
   metrics.py    host snapshots, metric history                  inventory.py rack elevation, CSV import/export
-  ops.py        Prometheus self-metrics, verified backups
+  ops.py        Prometheus self-metrics, verified backups      logs.py      JSON logs, request IDs
+  openapi.yaml  API contract (served at /api/v1/openapi.json)
 config/         server.yaml, rules.yaml, collectors/*.yaml
 docker/         host image (sshd, nginx, stress-ng), central bootstrap
-deploy/         ansible/, systemd/
+deploy/         kubernetes/, ansible/, systemd/
 scripts/        benchmark.py (load test)
-tests/          268 pytest tests
+tests/          307 pytest tests
 ```
 
 Python 3.10+ · Flask · SQLite · OpenSSH / paramiko · Jinja2 · pytest · Docker Compose · Ansible · systemd

@@ -30,6 +30,7 @@ import threading
 from inspector import __version__, auth, report, scheduler
 from inspector.config import DEFAULT_SERVER_CONFIG, REPORT_DIR, ConfigError, load_collector_config, load_server_config
 from inspector.db import DEFAULT_DB_PATH, connect, init_schema
+from inspector.logs import configure_logging
 from inspector.seed import seed
 
 log = logging.getLogger("inspector")
@@ -87,9 +88,7 @@ def main(argv=None) -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args(argv)
-    logging.basicConfig(
-        level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    configure_logging()
 
     try:
         if args.command in ("agent", "collect-once"):
