@@ -247,10 +247,28 @@ def test_served_spec_has_current_version(app):
     assert spec["info"]["version"] == __version__ and spec["openapi"].startswith("3.")
 
 
+def csp_sources(header: str, directive: str) -> list[str]:
+    """Parse one CSP directive into its exact source list (no substring matching)."""
+    for part in header.split(";"):
+        name, *sources = part.split()
+        if name == directive:
+            return sources
+    return []
+
+
 def test_docs_page_allows_its_cdn_only_there(app, login):
     docs = app.test_client().get("/api/docs")
-    assert docs.status_code == 200 and "unpkg.com" in docs.headers["Content-Security-Policy"]
-    assert "unpkg.com" not in login("vera").get("/").headers["Content-Security-Policy"]
+    assert docs.status_code == 200
+    assert "https://unpkg.com" in csp_sources(docs.headers["Content-Security-Policy"], "script-src")
+    home = login("vera").get("/").headers["Content-Security-Policy"]
+    assert "https://unpkg.com" not in csp_sources(home, "script-src")
+
+
+def test_log_safe_neutralises_newlines():
+    from inspector.errors import log_safe
+
+    assert log_safe("/x\r\nFAKE 200") == "/x\\r\\nFAKE 200"
+    assert log_safe(None) == ""
 
 
 def test_token_expiry_bound():

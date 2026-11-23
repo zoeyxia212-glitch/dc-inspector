@@ -42,7 +42,7 @@ from inspector.db import (
     transaction,
     utcnow,
 )
-from inspector.errors import InputError, int_arg
+from inspector.errors import InputError, int_arg, log_safe
 from inspector.ingest import IngestError, ingest
 from inspector.logs import request_id_var
 
@@ -143,19 +143,20 @@ def create_app(
             response.headers.setdefault("Cache-Control", "no-store")
         user = g.get("user")
         level = logging.DEBUG if request.path.startswith(("/health", "/metrics")) else logging.INFO
+        method, path, ip = log_safe(request.method), log_safe(request.path), log_safe(client_ip())
         access_log.log(
             level,
             "%s %s %s",
-            request.method,
-            request.path,
+            method,
+            path,
             response.status_code,
             extra={
-                "method": request.method,
-                "path": request.path,
+                "method": method,
+                "path": path,
                 "status": response.status_code,
                 "duration_ms": round((time.perf_counter() - g.get("started", time.perf_counter())) * 1000, 1),
                 "user": user["username"] if user else None,
-                "ip": client_ip(),
+                "ip": ip,
             },
         )
         return response
@@ -224,8 +225,8 @@ def create_app(
             # autocommit (no transaction): the failed-attempt counter must persist when this raises
             user = auth.authenticate(db(), username, request.form.get("password", ""))
         except auth.AuthError as exc:
-            auth.audit(db(), username or None, "login_failed", str(exc), client_ip())
-            return render_template("login.html", error=str(exc)), 401
+            auth.audit(db(), username or None, "login_failed", exc.message, client_ip())
+            return render_template("login.html", error=exc.message), 401
         auth.audit(db(), username, "login", "", client_ip())
         session.clear()
         session.permanent = True
@@ -307,7 +308,7 @@ def create_app(
                 )
                 audit("token_create", f"{created['name']} ({created['role']}, expires {created['expires_at']})")
         except (auth.AuthError, InputError) as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         return jsonify(created), 201
 
     @app.delete("/api/v1/tokens/<int:token_id>")
@@ -351,7 +352,7 @@ def create_app(
         try:
             results = lookup.search(db(), query)
         except lookup.InvalidQuery as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         audit("device_search", query)
         return jsonify(query=query, count=len(results), devices=results)
 
@@ -423,7 +424,7 @@ def create_app(
             hours = int_arg(request.args.get("hours", 24), "hours", 1, 744)
             series = metrics.history(db(), host, keys, hours)
         except InputError as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         return jsonify(host=host, hours=hours, series=series)
 
     @app.get("/api/v1/alerts")
@@ -494,7 +495,7 @@ def create_app(
                     f"{data.get('duration_minutes')}min: {data.get('reason')}",
                 )
         except InputError as exc:
-            return jsonify(error=f"Invalid silence: {exc}"), 400
+            return jsonify(error=f"Invalid silence: {exc.message}"), 400
         return jsonify(id=sid), 201
 
     @app.delete("/api/v1/silences/<int:silence_id>")
@@ -547,7 +548,7 @@ def create_app(
                 )
                 audit("user_create", f"{data.get('username')} as {data.get('role', 'viewer')}")
         except auth.AuthError as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         return jsonify(ok=True), 201
 
     @app.patch("/api/v1/users/<username>")
@@ -566,7 +567,7 @@ def create_app(
                 changes = ", ".join(f"{k}={'***' if k == 'password' else v}" for k, v in data.items())
                 audit("user_update", f"{username}: {changes}")
         except auth.AuthError as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         return jsonify(ok=True)
 
     @app.get("/api/v1/collectors")
@@ -613,7 +614,7 @@ def create_app(
         try:
             result = ingest(db(), settings, name, payload)
         except IngestError as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         db().execute("UPDATE collectors SET last_ip = ? WHERE name = ?", (client_ip(), name))
         return jsonify(result)
 

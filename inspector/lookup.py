@@ -4,6 +4,8 @@ import ipaddress
 import re
 import sqlite3
 
+from inspector.errors import PublicError
+
 ASSET_RE = re.compile(r"^AST-\d{1,6}$", re.IGNORECASE)
 RACK_RE = re.compile(r"^SH\d{2}(-[A-Z]\d{2})?$", re.IGNORECASE)  # SH01 or SH01-A03
 IP_PREFIX_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){0,3}\.?$")  # 10.1. or 10.1.2
@@ -20,7 +22,7 @@ DEVICE_JOIN = """
 MAX_RESULTS = 200
 
 
-class InvalidQuery(ValueError):
+class InvalidQuery(PublicError):
     """Raised when a search term is not a valid IP, rack code or asset ID."""
 
 

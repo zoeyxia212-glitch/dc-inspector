@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from inspector.db import from_text, inserted_id, to_text, utcnow
+from inspector.errors import PublicError
 from inspector.parsers import SAFE_NAME
 
 ROLES = ("viewer", "operator", "admin")
@@ -31,7 +32,7 @@ LOCKOUT = timedelta(minutes=15)
 _DUMMY_HASH = generate_password_hash("not-a-real-password")
 
 
-class AuthError(ValueError):
+class AuthError(PublicError):
     pass
 
 

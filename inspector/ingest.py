@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from inspector import alerts, lookup, notify
 from inspector.config import ServerSettings
 from inspector.db import TIME_FORMAT, from_text, inserted_id, to_text, transaction, utcnow
+from inspector.errors import PublicError
 from inspector.parsers import SAFE_NAME
 
 MAX_SAMPLES = 2000
@@ -13,7 +14,7 @@ MAX_VALUES = 500
 MAX_CLOCK_SKEW = timedelta(minutes=10)
 
 
-class IngestError(ValueError):
+class IngestError(PublicError):
     pass
 
 
