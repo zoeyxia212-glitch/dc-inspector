@@ -54,8 +54,16 @@ def test_add_collector_prints_token_once(db, capsys):
     main(["add-collector", "sh-east", "--db", str(db)])
     token = capsys.readouterr().out.strip().splitlines()[-1]
     assert auth.collector_for_token(connect(db), token) == "sh-east"
-    main(["add-collector", "sh-west", "--token", "w" * 30, "--db", str(db)])
-    assert "w" * 30 not in capsys.readouterr().out  # a given token is never echoed
+    main(["gen-token"])
+    given = capsys.readouterr().out.strip()
+    main(["add-collector", "sh-west", "--token", given, "--db", str(db)])
+    assert given not in capsys.readouterr().out  # a given token is never echoed
+    assert auth.collector_for_token(connect(db), given) == "sh-west"
+
+
+def test_add_collector_rejects_made_up_token(db):
+    with pytest.raises(SystemExit, match="gen-token"):
+        main(["add-collector", "sh-west", "--token", "w" * 30, "--db", str(db)])
 
 
 def test_check_config(db, capsys):

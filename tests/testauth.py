@@ -66,6 +66,23 @@ def test_collector_tokens(conn):
     assert auth.collector_for_token(conn, token) is None and auth.collector_for_token(conn, new) == "sh-south"
 
 
-def test_short_collector_token_rejected(conn):
-    with pytest.raises(auth.AuthError):
-        auth.register_collector(conn, "x", "short")
+@pytest.mark.parametrize(
+    "token",
+    [
+        "short",
+        "datacenter-shanghai-2026-north-token-secret",  # human-made, no prefix
+        "dcc_" + "a" * 43,  # right shape, no entropy
+        "dcc_" + "ab" * 22,
+        "dcc_north0123456789ABCDEFGHIJKLMNOPQRSTUVWXY!",  # character outside base64url
+    ],
+)
+def test_weak_preshared_collector_token_rejected(conn, token):
+    with pytest.raises(auth.AuthError, match="gen-token"):
+        auth.register_collector(conn, "x", token)
+
+
+def test_generated_collector_tokens_are_accepted(conn):
+    token = auth.new_collector_token()
+    assert token.startswith("dcc_") and len(token) == 47
+    assert auth.register_collector(conn, "sh-east", token) == token
+    assert auth.collector_for_token(conn, token) == "sh-east"

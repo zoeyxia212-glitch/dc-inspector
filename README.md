@@ -209,7 +209,7 @@ an image vulnerability scan on every pull request; tagged releases publish a con
 GHCR with an SBOM. See [CONTRIBUTING.md](CONTRIBUTING.md) (branching model, release process),
 [SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md).
 
-CLI: `init | create-user | add-collector | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices | backup | verify-backup`
+CLI: `init | create-user | add-collector | gen-token | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices | backup | verify-backup`
 
 ## Performance
 

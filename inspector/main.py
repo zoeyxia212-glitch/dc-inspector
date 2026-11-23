@@ -4,6 +4,7 @@ Central server
     python -m inspector.main init                      # create tables (+ mock inventory if empty)
     python -m inspector.main create-user alice --role admin
     python -m inspector.main add-collector sh-north    # prints the collector's API token once
+    python -m inspector.main gen-token                 # random token to pre-share via a vault/secret
     python -m inspector.main server                    # dev web server (use gunicorn in production)
     python -m inspector.main scheduler                 # notifications, watchdog, daily report
     python -m inspector.main report                    # write a report now
@@ -64,6 +65,7 @@ def main(argv=None) -> None:
             "seed",
             "create-user",
             "add-collector",
+            "gen-token",
             "server",
             "scheduler",
             "report",
@@ -78,7 +80,7 @@ def main(argv=None) -> None:
     )
     p.add_argument("name", nargs="?", help="username, collector name, or CSV file")
     p.add_argument("--role", default="viewer", choices=auth.ROLES)
-    p.add_argument("--token", help="add-collector: use this token instead of generating one")
+    p.add_argument("--token", help="add-collector: pre-shared token from gen-token instead of a new one")
     p.add_argument("--server-config", default=DEFAULT_SERVER_CONFIG)
     p.add_argument("--config", help="collector config (agent, collect-once)")
     p.add_argument("--db", default=DEFAULT_DB_PATH)
@@ -156,6 +158,9 @@ def _server_command(args) -> None:
             sys.exit(str(exc))
         auth.audit(conn, "cli", "user_create", f"{args.name} as {args.role}")
         log.info("User %s created with role %s", args.name, args.role)
+        return
+    if args.command == "gen-token":
+        print(auth.new_collector_token())
         return
     if args.command == "add-collector":
         if not args.name:

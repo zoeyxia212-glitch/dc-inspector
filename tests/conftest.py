@@ -24,7 +24,7 @@ def at(step: int) -> datetime:
 def conn():
     c = connect(":memory:")
     seed(c)
-    auth.register_collector(c, "sh-north", "north-token-0123456789abcdef")
+    auth.register_collector(c, "sh-north", "dcc_north0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZab")
     yield c
     c.close()
 

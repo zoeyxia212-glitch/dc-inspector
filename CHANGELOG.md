@@ -24,6 +24,11 @@ All notable changes are documented here. The format follows
 
 ### Security
 - Upgrade paramiko to 5.x (PYSEC-2026-2858 / CVE-2026-44405: SHA-1 allowed for RSA keys).
+- Pre-shared collector tokens must come from the new `gen-token` command (`dcc_` + 256 random bits);
+  made-up tokens are rejected because tokens are stored as a fast SHA-256 digest. Already registered
+  collectors keep working.
+- Error responses only return messages written for the user (`PublicError.message`), and the access
+  log escapes CR/LF in client-supplied values.
 
 ## [2.1.0] - 2026-11-23
 

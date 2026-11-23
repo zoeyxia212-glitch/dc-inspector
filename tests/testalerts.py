@@ -246,7 +246,7 @@ def test_problem_still_open_after_backfill_notifies_opened_with_real_time(conn, 
 def test_all_collectors_silent_blames_central_not_sites(conn, push):
     from inspector import auth
 
-    auth.register_collector(conn, "sh-south", "south-token-0123456789abcdef")
+    auth.register_collector(conn, "sh-south", "dcc_south0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZab")
     conn.execute("UPDATE collectors SET last_seen_at = ?", (to_text(T0),))
     with transaction(conn):
         events = alerts.check_collectors(conn, 120, T0 + timedelta(minutes=5))

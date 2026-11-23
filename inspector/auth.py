@@ -10,6 +10,7 @@ LDAP/AD single sign-on would replace `authenticate()`; roles and audit stay the 
 
 import hashlib
 import hmac
+import re
 import secrets
 import sqlite3
 import threading
@@ -126,13 +127,35 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+COLLECTOR_TOKEN_PREFIX = "dcc_"  # noqa: S105 - public prefix that marks token type, not a secret
+_COLLECTOR_TOKEN_RE = re.compile(r"dcc_[A-Za-z0-9_-]{43,128}")
+
+
+def new_collector_token() -> str:
+    """A 256-bit random collector token, e.g. for a vault or a Kubernetes secret."""
+    return COLLECTOR_TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def _check_collector_token(token: str) -> None:
+    """Pre-shared tokens must look machine-generated: tokens are stored as a fast SHA-256 digest,
+    which is only safe for high-entropy secrets, never for something a person made up."""
+    body = token[len(COLLECTOR_TOKEN_PREFIX) :]
+    if not _COLLECTOR_TOKEN_RE.fullmatch(token) or len(set(body)) < 16:
+        raise AuthError("Collector tokens must be generated with: python -m inspector.main gen-token")
+
+
 def register_collector(conn: sqlite3.Connection, name: str, token: str | None = None) -> str:
-    """Create or rotate a collector token. The plain token is returned once and never stored."""
+    """Create or rotate a collector token. The plain token is returned once and never stored.
+
+    ``token`` lets deployment tooling (Ansible vault, Kubernetes secret, compose .env) pre-share a
+    token with the collector; it must come from :func:`new_collector_token`.
+    """
     if not SAFE_NAME.match(name or ""):
         raise AuthError("Invalid collector name")
-    token = token or secrets.token_urlsafe(32)
-    if len(token) < 24:
-        raise AuthError("Collector tokens must be at least 24 characters")
+    if token is None:
+        token = new_collector_token()
+    else:
+        _check_collector_token(token)
     conn.execute(
         """INSERT INTO collectors (name, token_hash, created_at) VALUES (?, ?, ?)
            ON CONFLICT(name) DO UPDATE SET token_hash = excluded.token_hash""",

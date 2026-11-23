@@ -82,7 +82,7 @@ def main() -> None:
         db_path = Path(tmp) / "bench.db"
         conn = connect(db_path)
         seed(conn)
-        auth.register_collector(conn, "bench", "bench-token-0123456789abcdefgh")
+        auth.register_collector(conn, "bench", "dcc_bench0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZab")
         # first 360 hosts are real inventory devices (rack correlation applies), the rest are extra
         inventory_hosts = [r[0] for r in conn.execute("SELECT hostname FROM devices WHERE device_type='server'")]
         hosts = (inventory_hosts + [f"extra-{i:05d}" for i in range(args.hosts)])[: args.hosts]

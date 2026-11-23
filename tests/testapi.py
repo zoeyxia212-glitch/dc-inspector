@@ -5,7 +5,7 @@ from conftest import HOST, PASSWORD, alerts_by, healthy
 
 from inspector.db import to_text, utcnow
 
-TOKEN = {"Authorization": "Bearer north-token-0123456789abcdef"}
+TOKEN = {"Authorization": "Bearer dcc_north0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZab"}
 
 
 def sample(host=HOST, seconds_ago=0, **overrides):
