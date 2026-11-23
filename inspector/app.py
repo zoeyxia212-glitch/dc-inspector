@@ -10,10 +10,10 @@ from datetime import timedelta
 from functools import wraps
 from pathlib import Path
 
-from flask import (Flask, abort, g, jsonify, redirect, render_template, request,
+from flask import (Flask, Response, abort, g, jsonify, redirect, render_template, request,
                    send_from_directory, session, url_for)
 
-from inspector import __version__, alerts, auth, lookup
+from inspector import __version__, alerts, auth, inventory, lookup, metrics
 from inspector.config import DEFAULT_SERVER_CONFIG, REPORT_DIR, ServerSettings, load_server_config
 from inspector.db import DEFAULT_DB_PATH, connect, from_text, init_schema, to_text, transaction, utcnow
 from inspector.ingest import IngestError, ingest
@@ -158,43 +158,65 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @app.get("/api/v1/devices/<asset_id>")
     @require()
     def device_detail(asset_id):
-        device = lookup.get_device_detail(db(), asset_id)
+        c = db()
+        device = lookup.get_device_detail(c, asset_id)
         if device is None:
             return jsonify(error=f"Device {asset_id} not found"), 404
+        snap = metrics.latest(c, settings.interval_seconds * 3, host=device["hostname"])
+        device["monitoring"] = {
+            "latest": snap[0] if snap else None,
+            "alerts": [dict(r) for r in c.execute(
+                """SELECT id, rule, target, severity, summary, status, opened_at, resolved_at, acked_by, silenced
+                   FROM alerts WHERE host = ? ORDER BY status = 'resolved', opened_at DESC LIMIT 20""",
+                (device["hostname"],))],
+        }
         return jsonify(device)
+
+    @app.get("/api/v1/racks/<code>")
+    @require()
+    def rack_view(code):
+        rack = inventory.rack_elevation(db(), code)
+        if rack is None:
+            return jsonify(error=f"Rack {code} not found"), 404
+        return jsonify(rack)
+
+    @app.get("/api/v1/inventory/export.csv")
+    @require()
+    def export_inventory():
+        audit("inventory_export")
+        return Response(inventory.export_csv(db()), mimetype="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=inventory.csv"})
+
+    @app.post("/api/v1/inventory/import")
+    @require("admin")
+    def import_inventory():
+        data = body()
+        text, dry_run = data.get("csv"), bool(data.get("dry_run", True))
+        if not isinstance(text, str) or not text.strip():
+            return jsonify(error="csv text is required"), 400
+        result = inventory.import_csv(db(), text, dry_run=dry_run)
+        if result.ok and not dry_run:
+            audit("inventory_import", f"created {result.created}, updated {result.updated}, "
+                                      f"unchanged {result.unchanged}")
+        return jsonify(result.to_dict()), (200 if result.ok else 422)
 
     # ------------------------------------------------------------ monitoring
     @app.get("/api/v1/hosts")
     @require()
     def host_status():
-        c = db()
-        stale_before = to_text(utcnow() - timedelta(seconds=settings.interval_seconds * 3))
-        rows = c.execute(
-            """SELECT s.* FROM samples s
-               JOIN (SELECT host, MAX(collected_at) AS t FROM samples GROUP BY host) latest
-                 ON latest.host = s.host AND latest.t = s.collected_at
-               ORDER BY s.host""").fetchall()
-        open_counts = {r["host"]: r["n"] for r in c.execute(
-            "SELECT host, COUNT(*) AS n FROM alerts WHERE status = 'open' GROUP BY host")}
-        hosts = []
-        for row in rows:
-            values = {v["key"]: (v["num"] if v["num"] is not None else v["text"]) for v in c.execute(
-                "SELECT key, num, text FROM sample_values WHERE sample_id = ?", (row["id"],))}
-            hosts.append({
-                "host": row["host"], "datacenter": row["datacenter"], "collector": row["collector"],
-                "collected_at": row["collected_at"], "up": bool(row["up"]), "error": row["error"],
-                "stale": row["collected_at"] < stale_before,
-                "cpu": values.get("cpu.percent"), "mem": values.get("mem.percent"),
-                "load_per_core": values.get("load.per_core"),
-                "disks": {k[5:-8]: v for k, v in values.items() if k.startswith("disk.") and k.endswith(".percent")
-                          and not k.endswith(".inode_percent")},
-                "services_down": sorted(k[8:-3] for k, v in values.items()
-                                        if k.startswith("service.") and k.endswith(".up") and v == 0),
-                "checks": {k[6:]: v for k, v in values.items() if k.startswith("check.")},
-                "open_alerts": open_counts.get(row["host"], 0),
-                "location": lookup.get_location(c, row["host"]),
-            })
+        hosts = metrics.latest(db(), settings.interval_seconds * 3)
         return jsonify(count=len(hosts), hosts=hosts)
+
+    @app.get("/api/v1/hosts/<host>/history")
+    @require()
+    def host_history(host):
+        keys = [k for k in request.args.get("keys", "cpu.percent,mem.percent").split(",") if k]
+        try:
+            hours = int(request.args.get("hours", 24))
+            series = metrics.history(db(), host, keys, hours)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        return jsonify(host=host, hours=hours, series=series)
 
     @app.get("/api/v1/alerts")
     @require()

@@ -8,6 +8,8 @@ Central server
     python -m inspector.main scheduler                 # notifications, watchdog, daily report
     python -m inspector.main report                    # write a report now
     python -m inspector.main check-config              # validate server.yaml + rules.yaml
+    python -m inspector.main export-devices inventory.csv
+    python -m inspector.main import-devices inventory.csv [--dry-run]   # upsert from CMDB export
 
 Regional collector
     python -m inspector.main agent --config collector.yaml
@@ -52,14 +54,16 @@ def _password(prompt_env: str) -> str:
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="inspector", description=f"DC Inspector {__version__}")
     p.add_argument("command", choices=["init", "seed", "create-user", "add-collector", "server", "scheduler",
-                                       "report", "check-config", "agent", "collect-once"])
-    p.add_argument("name", nargs="?", help="username (create-user) or collector name (add-collector)")
+                                       "report", "check-config", "agent", "collect-once",
+                                       "import-devices", "export-devices"])
+    p.add_argument("name", nargs="?", help="username, collector name, or CSV file")
     p.add_argument("--role", default="viewer", choices=auth.ROLES)
     p.add_argument("--token", help="add-collector: use this token instead of generating one")
     p.add_argument("--server-config", default=DEFAULT_SERVER_CONFIG)
     p.add_argument("--config", help="collector config (agent, collect-once)")
     p.add_argument("--db", default=DEFAULT_DB_PATH)
     p.add_argument("--hours", type=int, default=24)
+    p.add_argument("--dry-run", action="store_true", help="import-devices: validate only")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args(argv)
@@ -126,6 +130,24 @@ def _server_command(args) -> None:
             print(f"Collector {args.name} registered. Token (shown once, store it in the collector's environment):")
             print(token)
         return
+
+    if args.command in ("import-devices", "export-devices"):
+        from inspector import inventory
+        if not args.name:
+            sys.exit(f"Usage: {args.command} <file.csv>")
+        if args.command == "export-devices":
+            with open(args.name, "w", encoding="utf-8", newline="") as f:
+                f.write(inventory.export_csv(conn))
+            log.info("Inventory exported to %s", args.name)
+            return
+        with open(args.name, encoding="utf-8-sig") as f:
+            result = inventory.import_csv(conn, f.read(), dry_run=args.dry_run)
+        for err in result.errors[:50]:
+            print("ERROR", err)
+        print(json.dumps({k: v for k, v in result.to_dict().items() if k != "errors"}))
+        if result.ok and not args.dry_run:
+            auth.audit(conn, "cli", "inventory_import", f"{args.name}: created {result.created}, updated {result.updated}")
+        sys.exit(0 if result.ok else 1)
 
     settings = load_server_config(args.server_config)
     if args.command == "report":
