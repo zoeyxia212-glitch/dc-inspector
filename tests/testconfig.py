@@ -44,8 +44,10 @@ def test_errors(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_collector_config(tmp_path / "missing.yaml")
     bad = tmp_path / "c.yaml"
-    bad.write_text("name: x\ncentral_url: http://c\nhosts:\n  - {name: a, address: a, datacenter: SH01}\n"
-                   "  - {name: a, address: b, datacenter: SH01}\n")
+    bad.write_text(
+        "name: x\ncentral_url: http://c\nhosts:\n  - {name: a, address: a, datacenter: SH01}\n"
+        "  - {name: a, address: b, datacenter: SH01}\n"
+    )
     with pytest.raises(ConfigError, match="Duplicate"):
         load_collector_config(bad)
     (tmp_path / "server.yaml").write_text("notifications:\n  channels:\n    - {name: x, type: pager}\n")

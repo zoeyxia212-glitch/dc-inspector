@@ -1,17 +1,25 @@
 from datetime import timedelta
 
 import pytest
+from conftest import HOST, at
 
 from inspector import inventory, metrics
 from inspector.main import main
 
-from conftest import HOST, T0, at
-
 HEADER = ",".join(inventory.COLUMNS)
 
 
-def row(asset="AST-900001", host="new-srv01", ip="10.99.0.1", dtype="server", rack="SH01-A01", u=30,
-        status="online", vendor="Dell", model="R760"):
+def row(
+    asset="AST-900001",
+    host="new-srv01",
+    ip="10.99.0.1",
+    dtype="server",
+    rack="SH01-A01",
+    u=30,
+    status="online",
+    vendor="Dell",
+    model="R760",
+):
     return f"{asset},{host},{ip},{dtype},{vendor},{model},{rack},{u},{status}"
 
 
@@ -28,7 +36,7 @@ def test_rack_elevation(conn, push):
     push(0, **{"service.nginx.up": 0.0})
     rack = inventory.rack_elevation(conn, "sh01-a01")
     assert rack["total_u"] == 42 and rack["used_u"] == 9 and rack["free_u"] == 33
-    assert [u["u"] for u in rack["units"][:2]] == [42, 41]              # top of the rack first
+    assert [u["u"] for u in rack["units"][:2]] == [42, 41]  # top of the rack first
     top = rack["units"][0]["device"]
     assert top["device_type"] == "switch" and top["monitored"] is False
     srv = next(u["device"] for u in rack["units"] if u["u"] == 2)
@@ -49,9 +57,21 @@ def test_export_then_import_is_unchanged(conn):
 
 
 def test_create_and_update(conn):
-    result = inventory.import_csv(conn, csv_text(row(), row(asset="AST-000002", host="sh01-a01-srv01",
-                                                           ip="10.1.1.11", u=2, status="maintenance",
-                                                           vendor="Dell", model="PowerEdge R750")))
+    result = inventory.import_csv(
+        conn,
+        csv_text(
+            row(),
+            row(
+                asset="AST-000002",
+                host="sh01-a01-srv01",
+                ip="10.1.1.11",
+                u=2,
+                status="maintenance",
+                vendor="Dell",
+                model="PowerEdge R750",
+            ),
+        ),
+    )
     assert result.ok and result.created == 1 and result.updated == 1
     assert conn.execute("SELECT status FROM devices WHERE asset_id='AST-000002'").fetchone()[0] == "maintenance"
     assert count(conn) == 361
@@ -62,20 +82,23 @@ def test_dry_run_changes_nothing(conn):
     assert result.ok and result.created == 1 and count(conn) == 360
 
 
-@pytest.mark.parametrize("bad, message", [
-    (row(ip="10.99.0.999"), "bad ip"),
-    (row(rack="SH99-A01"), "unknown rack"),
-    (row(u=50), "u_position must be 1-42"),
-    (row(dtype="router"), "device_type"),
-    (row(status="broken"), "status"),
-    (row(host="bad host"), "bad hostname"),
-    (row(u=2), "SH01-A01 U2 used by"),                      # occupied by an existing server
-    (row(ip="10.1.1.11"), "already used"),                  # ip of an existing device
-])
+@pytest.mark.parametrize(
+    "bad, message",
+    [
+        (row(ip="10.99.0.999"), "bad ip"),
+        (row(rack="SH99-A01"), "unknown rack"),
+        (row(u=50), "u_position must be 1-42"),
+        (row(dtype="router"), "device_type"),
+        (row(status="broken"), "status"),
+        (row(host="bad host"), "bad hostname"),
+        (row(u=2), "SH01-A01 U2 used by"),  # occupied by an existing server
+        (row(ip="10.1.1.11"), "already used"),  # ip of an existing device
+    ],
+)
 def test_invalid_rows_reject_whole_file(conn, bad, message):
     result = inventory.import_csv(conn, csv_text(row(asset="AST-900002", host="ok-srv", ip="10.99.0.2", u=31), bad))
     assert not result.ok and message in " ".join(result.errors)
-    assert count(conn) == 360                               # nothing applied, not even the good row
+    assert count(conn) == 360  # nothing applied, not even the good row
 
 
 def test_duplicates_within_file(conn):
@@ -86,7 +109,11 @@ def test_duplicates_within_file(conn):
 def test_move_inside_one_file_is_allowed(conn):
     # swap two servers' U positions in a single import
     text = inventory.export_csv(conn)
-    text = text.replace(",SH01-A01,2,", ",SH01-A01,TMP,").replace(",SH01-A01,4,", ",SH01-A01,2,").replace(",SH01-A01,TMP,", ",SH01-A01,4,")
+    text = (
+        text.replace(",SH01-A01,2,", ",SH01-A01,TMP,")
+        .replace(",SH01-A01,4,", ",SH01-A01,2,")
+        .replace(",SH01-A01,TMP,", ",SH01-A01,4,")
+    )
     result = inventory.import_csv(conn, text)
     assert result.ok and result.updated == 2
 
@@ -122,7 +149,7 @@ def test_history_window_and_downsampling(conn, push):
     for step in range(20):
         push(step, **{"cpu.percent": float(step)})
     data = metrics.history(conn, HOST, ["cpu.percent"], hours=1, now=at(20), max_points=5)
-    assert len(data["cpu.percent"]) == 5 and data["cpu.percent"][0][1] == 1.5      # mean of 0..3
+    assert len(data["cpu.percent"]) == 5 and data["cpu.percent"][0][1] == 1.5  # mean of 0..3
     recent = metrics.history(conn, HOST, ["cpu.percent"], hours=1, now=at(20) + timedelta(minutes=55))
     assert len(recent["cpu.percent"]) < 20
 
@@ -140,15 +167,15 @@ def test_latest_snapshot_links_asset(conn, push):
 
 
 # ---------------------------------------------------------- review fixes
-@pytest.mark.parametrize("vendor", ["=HYPERLINK(\"http://evil\")", "+cmd", "-2+3", "@SUM(A1)", "x" * 81, ""])
+@pytest.mark.parametrize("vendor", ['=HYPERLINK("http://evil")', "+cmd", "-2+3", "@SUM(A1)", "x" * 81, ""])
 def test_formula_like_or_bad_vendor_rejected(conn, vendor):
     result = inventory.import_csv(conn, csv_text(row(vendor=vendor.replace(",", ""))))
     assert not result.ok and "vendor" in result.errors[0]
 
 
 def test_export_neutralises_formula_cells(conn):
-    conn.execute("UPDATE devices SET model = '=1+1' WHERE asset_id = 'AST-000001'")   # e.g. legacy bad data
-    line = next(l for l in inventory.export_csv(conn).splitlines() if l.startswith("AST-000001"))
+    conn.execute("UPDATE devices SET model = '=1+1' WHERE asset_id = 'AST-000001'")  # e.g. legacy bad data
+    line = next(x for x in inventory.export_csv(conn).splitlines() if x.startswith("AST-000001"))
     assert ",'=1+1," in line
 
 

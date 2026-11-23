@@ -17,6 +17,7 @@ Regional collector
     python -m inspector.main agent --config collector.yaml
     python -m inspector.main collect-once --config collector.yaml   # debug: print one round as JSON
 """
+
 import argparse
 import getpass
 import json
@@ -55,9 +56,25 @@ def _password(prompt_env: str) -> str:
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="inspector", description=f"DC Inspector {__version__}")
-    p.add_argument("command", choices=["init", "seed", "create-user", "add-collector", "server", "scheduler",
-                                       "report", "check-config", "agent", "collect-once",
-                                       "import-devices", "export-devices", "backup", "verify-backup"])
+    p.add_argument(
+        "command",
+        choices=[
+            "init",
+            "seed",
+            "create-user",
+            "add-collector",
+            "server",
+            "scheduler",
+            "report",
+            "check-config",
+            "agent",
+            "collect-once",
+            "import-devices",
+            "export-devices",
+            "backup",
+            "verify-backup",
+        ],
+    )
     p.add_argument("name", nargs="?", help="username, collector name, or CSV file")
     p.add_argument("--role", default="viewer", choices=auth.ROLES)
     p.add_argument("--token", help="add-collector: use this token instead of generating one")
@@ -70,8 +87,9 @@ def main(argv=None) -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = p.parse_args(argv)
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
 
     try:
         if args.command in ("agent", "collect-once"):
@@ -82,8 +100,9 @@ def main(argv=None) -> None:
 
 
 def _collector_command(args) -> None:
-    from inspector.agent import Agent, ssh_runner_factory   # collectors don't need Flask
+    from inspector.agent import Agent, ssh_runner_factory  # collectors don't need Flask
     from inspector.collector import collect_all
+
     if not args.config:
         sys.exit("--config collector.yaml is required")
     settings = load_collector_config(args.config)
@@ -98,12 +117,13 @@ def _collector_command(args) -> None:
 
 def _server_command(args) -> None:
     from inspector import ops
+
     if args.command == "verify-backup":
         if not args.name:
             sys.exit("Usage: verify-backup <backup file>")
-        result = ops.restore_check(args.name)
-        print(json.dumps(result))
-        sys.exit(0 if result["integrity"] == "ok" else 1)
+        summary = ops.restore_check(args.name)
+        print(json.dumps(summary))
+        sys.exit(0 if summary["integrity"] == "ok" else 1)
 
     conn = connect(args.db)
     applied = init_schema(conn)
@@ -153,6 +173,7 @@ def _server_command(args) -> None:
 
     if args.command in ("import-devices", "export-devices"):
         from inspector import inventory
+
         if not args.name:
             sys.exit(f"Usage: {args.command} <file.csv>")
         if args.command == "export-devices":
@@ -166,7 +187,9 @@ def _server_command(args) -> None:
             print("ERROR", err)
         print(json.dumps({k: v for k, v in result.to_dict().items() if k != "errors"}))
         if result.ok and not args.dry_run:
-            auth.audit(conn, "cli", "inventory_import", f"{args.name}: created {result.created}, updated {result.updated}")
+            auth.audit(
+                conn, "cli", "inventory_import", f"{args.name}: created {result.created}, updated {result.updated}"
+            )
         sys.exit(0 if result.ok else 1)
 
     settings = load_server_config(args.server_config)
@@ -177,6 +200,7 @@ def _server_command(args) -> None:
         scheduler.run_forever(conn, settings, _stop_event())
     elif args.command == "server":
         from inspector.app import create_app
+
         create_app(args.db, settings=settings).run(host=args.host, port=args.port, threaded=True)
 
 

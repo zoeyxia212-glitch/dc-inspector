@@ -4,6 +4,7 @@ SQLite keeps the project dependency-free and easy to run. All SQL is plain and
 portable; at larger scale the central database would move to PostgreSQL
 (samples to a time-series store) without changing the data model.
 """
+
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -12,7 +13,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = Path(os.environ.get("INSPECTOR_DB", PROJECT_ROOT / "data" / "inventory.db"))
-TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"   # always UTC, sorts correctly as text
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # always UTC, sorts correctly as text
 
 SCHEMA = """
 -- ================= Inventory (CMDB) =================
@@ -182,8 +183,9 @@ def connect(db_path=DEFAULT_DB_PATH) -> sqlite3.Connection:
     in_memory = str(db_path) == ":memory:"
     if not in_memory:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30,
-                           isolation_level=None)   # autocommit; explicit transactions via `transaction()`
+    conn = sqlite3.connect(
+        db_path, check_same_thread=False, timeout=30, isolation_level=None
+    )  # autocommit; explicit transactions via `transaction()`
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     if not in_memory:
@@ -209,11 +211,14 @@ def transaction(conn: sqlite3.Connection):
 # Schema migrations, applied in order and recorded in PRAGMA user_version.
 # Never edit a released migration: add a new one. SCHEMA above is version 1.
 MIGRATIONS: list[tuple[int, str]] = [
-    (2, """
+    (
+        2,
+        """
         -- Rack-level correlation: child host_down alerts point at the rack_outage alert.
         ALTER TABLE alerts ADD COLUMN parent_id INTEGER REFERENCES alerts(id);
         CREATE INDEX IF NOT EXISTS idx_alerts_parent ON alerts(parent_id);
-    """),
+    """,
+    ),
 ]
 SCHEMA_VERSION = max([1] + [v for v, _ in MIGRATIONS])
 
@@ -222,10 +227,17 @@ def schema_version(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA user_version").fetchone()[0]
 
 
+def inserted_id(cursor: sqlite3.Cursor) -> int:
+    """lastrowid is Optional in the DB-API; after an INSERT it must exist."""
+    if cursor.lastrowid is None:
+        raise RuntimeError("INSERT did not produce a row id")
+    return cursor.lastrowid
+
+
 def init_schema(conn: sqlite3.Connection) -> list[int]:
     """Create missing tables, then apply pending migrations. Returns the versions applied."""
     conn.executescript(SCHEMA)
-    current = schema_version(conn) or 1        # databases from before migrations existed are version 1
+    current = schema_version(conn) or 1  # databases from before migrations existed are version 1
     applied = []
     for version, sql in MIGRATIONS:
         if version <= current:

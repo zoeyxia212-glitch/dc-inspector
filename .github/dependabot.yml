@@ -1,0 +1,17 @@
+# Weekly dependency update PRs. They target `dev`, like every other change (see CONTRIBUTING.md).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule: {interval: weekly}
+    target-branch: dev
+    groups:
+      python-deps: {patterns: ["*"]}
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: {interval: weekly}
+    target-branch: dev
+  - package-ecosystem: docker
+    directory: "/"
+    schedule: {interval: weekly}
+    target-branch: dev

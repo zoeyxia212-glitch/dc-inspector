@@ -1,11 +1,12 @@
 """Device lookup: search by IP, rack location or asset ID, and show port connections."""
+
 import ipaddress
 import re
 import sqlite3
 
 ASSET_RE = re.compile(r"^AST-\d{1,6}$", re.IGNORECASE)
-RACK_RE = re.compile(r"^SH\d{2}(-[A-Z]\d{2})?$", re.IGNORECASE)   # SH01 or SH01-A03
-IP_PREFIX_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){0,3}\.?$")       # 10.1. or 10.1.2
+RACK_RE = re.compile(r"^SH\d{2}(-[A-Z]\d{2})?$", re.IGNORECASE)  # SH01 or SH01-A03
+IP_PREFIX_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){0,3}\.?$")  # 10.1. or 10.1.2
 
 DEVICE_COLUMNS = """
     d.asset_id, d.hostname, d.ip, d.device_type, d.vendor, d.model,
@@ -81,7 +82,8 @@ def get_device_detail(conn: sqlite3.Connection, asset_id: str) -> dict | None:
         WHERE d.asset_id = ?
         ORDER BY p.id
         """,
-        (device["asset_id"],)).fetchall()
+        (device["asset_id"],),
+    ).fetchall()
     device["ports"] = [dict(p) for p in ports]
     return device
 
@@ -89,8 +91,8 @@ def get_device_detail(conn: sqlite3.Connection, asset_id: str) -> dict | None:
 def get_location(conn: sqlite3.Connection, hostname: str) -> str | None:
     """'SH01-A01 U2' style location for alert messages, or None if not in inventory."""
     row = conn.execute(
-        f"SELECT r.code AS rack, d.u_position {DEVICE_JOIN} WHERE d.hostname = ?",
-        (hostname,)).fetchone()
+        f"SELECT r.code AS rack, d.u_position {DEVICE_JOIN} WHERE d.hostname = ?", (hostname,)
+    ).fetchone()
     return f"{row['rack']} U{row['u_position']}" if row else None
 
 

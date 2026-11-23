@@ -1,9 +1,11 @@
 """Alert rule definitions and evaluation over recent samples."""
+
 from dataclasses import dataclass, field
 
 import yaml
 
 from inspector import expr
+from inspector.expr import Node
 
 SEVERITIES = ("warning", "critical")
 
@@ -13,9 +15,10 @@ class Rule:
     name: str
     expr: str
     severity: str = "warning"
-    for_checks: int = 1              # condition must hold this many checks in a row
-    summary: str | None = None       # e.g. "Disk {target} is {value:.0f}% full"
-    node: expr.Node = field(default=None, compare=False, repr=False)
+    for_checks: int = 1  # condition must hold this many checks in a row
+    summary: str | None = None  # e.g. "Disk {target} is {value:.0f}% full"
+    # Annotated as `Node`, not `expr.Node`: inside this class `expr` is the field above, not the module.
+    node: Node | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         if self.severity not in SEVERITIES:
@@ -27,9 +30,20 @@ class Rule:
         except expr.ExprError as exc:
             raise ValueError(f"Rule {self.name}: {exc}") from exc
 
+    @property
+    def parsed(self) -> Node:
+        if self.node is None:
+            raise ValueError(f"Rule {self.name} was not parsed")
+        return self.node
+
     def to_dict(self) -> dict:
-        return {"name": self.name, "expr": self.expr, "severity": self.severity,
-                "for_checks": self.for_checks, "summary": self.summary}
+        return {
+            "name": self.name,
+            "expr": self.expr,
+            "severity": self.severity,
+            "for_checks": self.for_checks,
+            "summary": self.summary,
+        }
 
 
 def load_rules(path) -> list[Rule]:
@@ -38,7 +52,7 @@ def load_rules(path) -> list[Rule]:
     rules = []
     for item in raw.get("rules", []):
         item = dict(item)
-        if "for" in item:                       # allow Prometheus-style `for: 2`
+        if "for" in item:  # allow Prometheus-style `for: 2`
             item["for_checks"] = item.pop("for")
         rules.append(Rule(**item))
     names = [r.name for r in rules]
@@ -57,19 +71,18 @@ def evaluate_rule(rule: Rule, samples: list[dict]) -> dict[str, tuple[bool | Non
     if not samples:
         return {}
     latest = samples[0]
-    targets = (expr.wildcard_targets(rule.node, latest.keys())
-               if expr.has_wildcard(rule.node) else {""})
+    targets = expr.wildcard_targets(rule.parsed, latest.keys()) if expr.has_wildcard(rule.parsed) else {""}
     result = {}
     for target in sorted(targets):
-        window = samples[:rule.for_checks]
-        states = [expr.evaluate(rule.node, s, target) for s in window]
+        window = samples[: rule.for_checks]
+        states = [expr.evaluate(rule.parsed, s, target) for s in window]
         firing = len(window) == rule.for_checks and all(st is True for st in states)
         result[target] = (states[0], firing, _summary(rule, latest, target))
     return result
 
 
 def _summary(rule: Rule, values: dict, target: str) -> str:
-    first_key = expr.keys(rule.node)[0].replace("*", target)
+    first_key = expr.keys(rule.parsed)[0].replace("*", target)
     value = values.get(first_key)
     if rule.summary:
         try:

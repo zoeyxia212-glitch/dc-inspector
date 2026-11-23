@@ -1,9 +1,10 @@
 """Central background jobs (run as its own process: `python -m inspector.main scheduler`).
 
-  every 5 s    deliver pending notifications (with retries)
-  every 30 s   (watchdog_seconds) collector watchdog (collector_down), reminders for unacknowledged critical alerts
-  daily        inspection report (+ notify channels with daily_report: true), data retention
+every 5 s    deliver pending notifications (with retries)
+every 30 s   (watchdog_seconds) collector watchdog (collector_down), reminders for unacknowledged critical alerts
+daily        inspection report (+ notify channels with daily_report: true), data retention
 """
+
 import logging
 import sqlite3
 import threading
@@ -36,39 +37,51 @@ def run_watchdog(conn: sqlite3.Connection, settings: ServerSettings, now: dateti
     return len(events)
 
 
-def run_delivery(conn: sqlite3.Connection, settings: ServerSettings, now: datetime | None = None,
-                 senders: dict | None = None) -> dict:
+def run_delivery(
+    conn: sqlite3.Connection, settings: ServerSettings, now: datetime | None = None, senders: dict | None = None
+) -> dict:
     # Sending happens outside a long write lock; each row update is its own small write.
     return notify.deliver_pending(conn, settings.channels, now, senders)
 
 
-def run_daily(conn: sqlite3.Connection, settings: ServerSettings, report_dir=REPORT_DIR,
-              now: datetime | None = None, expected_hosts: dict | None = None) -> str:
+def run_daily(
+    conn: sqlite3.Connection,
+    settings: ServerSettings,
+    report_dir=REPORT_DIR,
+    now: datetime | None = None,
+    expected_hosts: dict | None = None,
+) -> str:
     now = now or utcnow()
-    path = report.write_report(conn, report_dir, until=now, expected_hosts=expected_hosts,
-                               tz=settings.timezone)
+    path = report.write_report(conn, report_dir, until=now, expected_hosts=expected_hosts, tz=settings.timezone)
     data = report.build_report_data(conn, now - timedelta(hours=24), now, expected_hosts, settings.timezone)
     summary = data["summary"]
     availability = f"{summary['availability']:.2f}%" if summary["availability"] is not None else "n/a"
-    body = "\n".join([
-        f"Daily inspection report {data['since']} -> {data['until']} ({settings.timezone})",
-        f"Hosts: {summary['hosts']}   Checks: {summary['checks']}   Availability: {availability}",
-        f"Alerts: {summary['alerts']} ({summary['critical']} critical)   Hosts needing attention: {summary['problem_hosts']}",
-        f"{settings.public_url.rstrip('/')}/reports/{path.name}",
-    ])
+    body = "\n".join(
+        [
+            f"Daily inspection report {data['since']} -> {data['until']} ({settings.timezone})",
+            f"Hosts: {summary['hosts']}   Checks: {summary['checks']}   Availability: {availability}",
+            f"Alerts: {summary['alerts']} ({summary['critical']} critical)   "
+            f"Hosts needing attention: {summary['problem_hosts']}",
+            f"{settings.public_url.rstrip('/')}/reports/{path.name}",
+        ]
+    )
     with transaction(conn):
         for channel in settings.channels:
             if channel.daily_report:
-                notify.enqueue_message(conn, channel, "report", f"Daily inspection report {data['until'][:10]}", body, now)
+                notify.enqueue_message(
+                    conn, channel, "report", f"Daily inspection report {data['until'][:10]}", body, now
+                )
         deleted = report.prune(conn, settings.retention_days, now)
-        conn.execute("DELETE FROM audit_log WHERE at < ?",
-                     (to_text(now - timedelta(days=settings.audit_retention_days)),))
+        conn.execute(
+            "DELETE FROM audit_log WHERE at < ?", (to_text(now - timedelta(days=settings.audit_retention_days)),)
+        )
     log.info("Daily report %s written; pruned %d old samples", path.name, deleted)
     return str(path)
 
 
-def run_forever(conn: sqlite3.Connection, settings: ServerSettings, stop: threading.Event,
-                report_dir=REPORT_DIR) -> None:
+def run_forever(
+    conn: sqlite3.Connection, settings: ServerSettings, stop: threading.Event, report_dir=REPORT_DIR
+) -> None:
     zone = ZoneInfo(settings.timezone)
     next_report = next_report_time(datetime.now(zone), settings.report_hour)
     next_watchdog = 0.0

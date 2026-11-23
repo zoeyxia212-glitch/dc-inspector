@@ -7,6 +7,7 @@ Simulates collectors sending realistic samples (about 15 metrics per host) in ba
 do real work. Measures ingest (storage + rule evaluation + notifications) and the read paths
 the UI uses. Runs on a temporary file database with WAL, like production.
 """
+
 import argparse
 import random
 import statistics
@@ -18,28 +19,53 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from inspector import auth, inventory, metrics  # noqa: E402
-from inspector.config import load_server_config  # noqa: E402
-from inspector.db import connect, to_text, utcnow  # noqa: E402
-from inspector.ingest import ingest  # noqa: E402
-from inspector.seed import seed  # noqa: E402
+from inspector import auth, inventory, metrics
+from inspector.config import load_server_config
+from inspector.db import connect, to_text, utcnow
+from inspector.ingest import ingest
+from inspector.seed import seed
 
 
 def sample(host: str, when: str, rng: random.Random, failing: bool) -> dict:
     if failing:
-        return {"host": host, "datacenter": "SH01", "collected_at": when, "up": 0,
-                "error": "Connection timed out", "values": {"ssh.error": "timeout", "ping.up": 0.0}}
-    return {"host": host, "datacenter": "SH01", "collected_at": when, "up": 1, "values": {
-        "cpu.percent": round(rng.uniform(2, 70), 1), "mem.percent": round(rng.uniform(20, 80), 1),
-        "swap.percent": 0.0, "load.1": 0.4, "load.5": 0.3, "load.15": 0.2, "cpu.cores": 16.0, "load.per_core": 0.03,
-        "disk./.percent": 55.0, "disk./.inode_percent": 4.0, "disk./data.percent": round(rng.uniform(30, 80), 1),
-        "disk./data.inode_percent": 2.0, "service.nginx.up": 1.0, "service.crond.up": 1.0,
-        "check.zombies": 0.0, "check.uptime_s": 900000.0, "check.ro_mounts": 0.0}}
+        return {
+            "host": host,
+            "datacenter": "SH01",
+            "collected_at": when,
+            "up": 0,
+            "error": "Connection timed out",
+            "values": {"ssh.error": "timeout", "ping.up": 0.0},
+        }
+    return {
+        "host": host,
+        "datacenter": "SH01",
+        "collected_at": when,
+        "up": 1,
+        "values": {
+            "cpu.percent": round(rng.uniform(2, 70), 1),
+            "mem.percent": round(rng.uniform(20, 80), 1),
+            "swap.percent": 0.0,
+            "load.1": 0.4,
+            "load.5": 0.3,
+            "load.15": 0.2,
+            "cpu.cores": 16.0,
+            "load.per_core": 0.03,
+            "disk./.percent": 55.0,
+            "disk./.inode_percent": 4.0,
+            "disk./data.percent": round(rng.uniform(30, 80), 1),
+            "disk./data.inode_percent": 2.0,
+            "service.nginx.up": 1.0,
+            "service.crond.up": 1.0,
+            "check.zombies": 0.0,
+            "check.uptime_s": 900000.0,
+            "check.ro_mounts": 0.0,
+        },
+    }
 
 
 def pct(values, p):
     values = sorted(values)
-    return values[min(len(values) - 1, int(round(p / 100 * (len(values) - 1))))]
+    return values[min(len(values) - 1, round(p / 100 * (len(values) - 1)))]
 
 
 def main() -> None:
@@ -59,18 +85,18 @@ def main() -> None:
         auth.register_collector(conn, "bench", "bench-token-0123456789abcdefgh")
         # first 360 hosts are real inventory devices (rack correlation applies), the rest are extra
         inventory_hosts = [r[0] for r in conn.execute("SELECT hostname FROM devices WHERE device_type='server'")]
-        hosts = (inventory_hosts + [f"extra-{i:05d}" for i in range(args.hosts)])[:args.hosts]
+        hosts = (inventory_hosts + [f"extra-{i:05d}" for i in range(args.hosts)])[: args.hosts]
 
         start = utcnow() - timedelta(seconds=30 * args.rounds)
         per_batch, per_round = [], []
         failing = set(rng.sample(hosts, max(1, int(len(hosts) * args.fail_rate))))
         for rnd in range(args.rounds):
             when = to_text(start + timedelta(seconds=30 * rnd))
-            if rnd == args.rounds // 2:          # half-way: different hosts fail, earlier ones recover
+            if rnd == args.rounds // 2:  # half-way: different hosts fail, earlier ones recover
                 failing = set(rng.sample(hosts, max(1, int(len(hosts) * args.fail_rate))))
             round_start = time.perf_counter()
             for i in range(0, len(hosts), args.batch):
-                batch = [sample(h, when, rng, h in failing) for h in hosts[i:i + args.batch]]
+                batch = [sample(h, when, rng, h in failing) for h in hosts[i : i + args.batch]]
                 t = time.perf_counter()
                 ingest(conn, settings, "bench", {"samples": batch}, now=start + timedelta(seconds=30 * rnd))
                 per_batch.append(time.perf_counter() - t)
@@ -95,16 +121,22 @@ def main() -> None:
     interval = 30
     print(f"\nHosts {args.hosts} · rounds {args.rounds} · batch {args.batch} · fail rate {args.fail_rate:.0%}")
     print(f"Stored: {samples:,} samples, {values:,} metric values, {alerts_open} open alerts, DB {size_mb:.1f} MB\n")
-    print(f"{'Ingest per batch (store + rules + notify)':45} p50 {pct(per_batch, 50) * 1000:7.1f} ms   "
-          f"p95 {pct(per_batch, 95) * 1000:7.1f} ms")
-    print(f"{'Ingest per full round (all hosts)':45} p50 {pct(per_round, 50):7.2f} s    "
-          f"= {pct(per_round, 50) / interval:.0%} of a {interval} s interval")
+    print(
+        f"{'Ingest per batch (store + rules + notify)':45} p50 {pct(per_batch, 50) * 1000:7.1f} ms   "
+        f"p95 {pct(per_batch, 95) * 1000:7.1f} ms"
+    )
+    print(
+        f"{'Ingest per full round (all hosts)':45} p50 {pct(per_round, 50):7.2f} s    "
+        f"= {pct(per_round, 50) / interval:.0%} of a {interval} s interval"
+    )
     print(f"{'Throughput':45} {args.hosts / pct(per_round, 50):,.0f} host-samples/s")
     print(f"{'GET /api/v1/hosts (latest for all hosts)':45} {latest_s * 1000:7.2f} ms")
     print(f"{'Host history 24 h (2 metrics)':45} {history_s * 1000:7.2f} ms")
     print(f"{'Rack elevation (42U)':45} {rack_s * 1000:7.2f} ms")
     capacity = int(args.hosts * interval / pct(per_round, 50) * 0.5)
-    print(f"\nEstimated capacity at 50% utilisation and a {interval} s interval: ~{capacity:,} hosts per central server")
+    print(
+        f"\nEstimated capacity at 50% utilisation and a {interval} s interval: ~{capacity:,} hosts per central server"
+    )
 
 
 if __name__ == "__main__":

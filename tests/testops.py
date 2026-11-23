@@ -1,28 +1,28 @@
 """Operational features: rack correlation, schema migrations, self-monitoring, backups."""
+
 import sqlite3
 from datetime import timedelta
 
 import pytest
+from conftest import T0, alerts_by, at, outbox
 
 from inspector import ops
 from inspector.alerts import due_reminders
 from inspector.db import SCHEMA, SCHEMA_VERSION, connect, init_schema, schema_version, transaction
 from inspector.main import main
 
-from conftest import T0, alerts_by, at, outbox
-
-RACK = [f"sh01-a01-srv0{i}" for i in range(1, 9)]          # 8 servers in rack SH01-A01
+RACK = [f"sh01-a01-srv0{i}" for i in range(1, 9)]  # 8 servers in rack SH01-A01
 
 
 def down(push, step, hosts):
     """One collection round: the collector sends every host of the round in one batch."""
-    push.batch(step, {h: False for h in hosts})
+    push.batch(step, dict.fromkeys(hosts, False))
 
 
 # ---------------------------------------------------------- rack correlation
 def test_rack_outage_groups_hosts(conn, push):
     for step in (0, 1):
-        down(push, step, RACK[:5])                       # 5 hosts in one rack go down together
+        down(push, step, RACK[:5])  # 5 hosts in one rack go down together
     open_ = alerts_by(conn)
     rack = open_[("rack/SH01-A01", "rack_outage", "")]
     assert "5 hosts in rack SH01-A01" in rack["summary"] and "sh01-a01-tor" in rack["summary"]
@@ -36,7 +36,7 @@ def test_hosts_below_threshold_alert_individually(conn, push):
     for step in (0, 1):
         down(push, step, RACK[:2])
     assert ("rack/SH01-A01", "rack_outage", "") not in alerts_by(conn)
-    assert sum(1 for o in outbox(conn) if "host_down" in o["subject"]) == 4      # 2 hosts x 2 channels
+    assert sum(1 for o in outbox(conn) if "host_down" in o["subject"]) == 4  # 2 hosts x 2 channels
 
 
 def test_later_host_joins_existing_rack_outage(conn, push):
@@ -45,7 +45,7 @@ def test_later_host_joins_existing_rack_outage(conn, push):
     before = len(outbox(conn))
     for step in (2, 3):
         down(push, step, RACK[:4])
-    assert len(outbox(conn)) == before                      # 4th host attached silently
+    assert len(outbox(conn)) == before  # 4th host attached silently
     rack = alerts_by(conn)[("rack/SH01-A01", "rack_outage", "")]
     assert rack["summary"].startswith("4 hosts")
 
@@ -54,7 +54,7 @@ def test_rack_recovery_notifies_once(conn, push):
     for step in (0, 1):
         down(push, step, RACK[:3])
     before = len(outbox(conn))
-    push.batch(2, {h: True for h in RACK[:3]})
+    push.batch(2, dict.fromkeys(RACK[:3], True))
     assert alerts_by(conn) == {}
     new = outbox(conn)[before:]
     assert {(o["subject"].split()[1], o["event"]) for o in new} == {("rack/SH01-A01", "resolved")}
@@ -78,20 +78,21 @@ def test_different_racks_are_independent(conn, push):
 def test_fresh_database_is_at_latest_version():
     c = connect(":memory:")
     assert init_schema(c) == [2] and schema_version(c) == SCHEMA_VERSION
-    assert init_schema(c) == []                                     # idempotent
+    assert init_schema(c) == []  # idempotent
 
 
 def test_existing_v1_database_is_upgraded_in_place(tmp_path):
     path = tmp_path / "old.db"
     old = sqlite3.connect(path)
-    old.executescript(SCHEMA)                                       # what v2.0 created: no parent_id, user_version 0
+    old.executescript(SCHEMA)  # what v2.0 created: no parent_id, user_version 0
     old.execute("""INSERT INTO alerts (host, rule, severity, summary, status, opened_at, last_seen_at)
                    VALUES ('h', 'cpu_high', 'critical', 's', 'open', '2026-11-18T00:00:00Z', '2026-11-18T00:00:00Z')""")
-    old.commit(); old.close()
+    old.commit()
+    old.close()
     c = connect(path)
     assert init_schema(c) == [2]
     row = c.execute("SELECT host, parent_id FROM alerts").fetchone()
-    assert row["host"] == "h" and row["parent_id"] is None          # data kept, column added
+    assert row["host"] == "h" and row["parent_id"] is None  # data kept, column added
 
 
 # ---------------------------------------------------------- self-monitoring
@@ -101,7 +102,7 @@ def test_prometheus_metrics(conn, push):
     assert 'dcinspector_collector_up{collector="sh-north"} 1' in text
     assert 'dcinspector_collector_last_seen_age_seconds{collector="sh-north"} 60.0' in text
     assert 'dcinspector_alerts_open{severity="critical"} 1' in text
-    assert 'dcinspector_alerts_critical_unacknowledged 1' in text
+    assert "dcinspector_alerts_critical_unacknowledged 1" in text
     assert 'dcinspector_notifications{status="pending"} 2' in text
     assert 'dcinspector_hosts{state="up"} 1' in text
     assert "# TYPE dcinspector_hosts gauge" in text

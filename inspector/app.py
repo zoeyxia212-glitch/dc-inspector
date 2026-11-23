@@ -3,6 +3,7 @@
 Dev:   python -m inspector.main server
 Prod:  gunicorn -w 2 -b 0.0.0.0:8000 "inspector.app:create_app()"   (behind a TLS reverse proxy)
 """
+
 import logging
 import os
 import secrets
@@ -10,8 +11,19 @@ from datetime import timedelta
 from functools import wraps
 from pathlib import Path
 
-from flask import (Flask, Response, abort, g, jsonify, redirect, render_template, request,
-                   send_from_directory, session, url_for)
+from flask import (
+    Flask,
+    Response,
+    abort,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    session,
+    url_for,
+)
 
 from inspector import __version__, alerts, auth, inventory, lookup, metrics, ops
 from inspector.config import DEFAULT_SERVER_CONFIG, REPORT_DIR, ServerSettings, load_server_config
@@ -21,8 +33,13 @@ from inspector.ingest import IngestError, ingest
 log = logging.getLogger(__name__)
 
 
-def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | None = None,
-               report_dir=REPORT_DIR, secret_key: str | None = None) -> Flask:
+def create_app(
+    db_path=DEFAULT_DB_PATH,
+    conn=None,
+    settings: ServerSettings | None = None,
+    report_dir=REPORT_DIR,
+    secret_key: str | None = None,
+) -> Flask:
     app = Flask(__name__)
     settings = settings or load_server_config(DEFAULT_SERVER_CONFIG)
     report_dir = Path(report_dir)
@@ -82,7 +99,9 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
                     # JSON-only writes: a cross-site HTML form cannot send application/json (CSRF protection)
                     return jsonify(error="Content-Type must be application/json"), 415
                 return fn(*args, **kwargs)
+
             return wrapper
+
         return deco
 
     def audit(action, detail=""):
@@ -146,8 +165,9 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
                 return Response("unauthorized\n", status=401, mimetype="text/plain")
         elif current_user() is None:
             return Response("login or INSPECTOR_METRICS_TOKEN required\n", status=401, mimetype="text/plain")
-        body_text = ops.prometheus_metrics(db(), settings.collector_stale_seconds,
-                                           None if conn is not None else db_path)
+        body_text = ops.prometheus_metrics(
+            db(), settings.collector_stale_seconds, None if conn is not None else db_path
+        )
         return Response(body_text, mimetype="text/plain; version=0.0.4")
 
     @app.get("/api/v1/me")
@@ -179,10 +199,14 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         snap = metrics.latest(c, settings.interval_seconds * 3, host=device["hostname"])
         device["monitoring"] = {
             "latest": snap[0] if snap else None,
-            "alerts": [dict(r) for r in c.execute(
-                """SELECT id, rule, target, severity, summary, status, opened_at, resolved_at, acked_by, silenced
+            "alerts": [
+                dict(r)
+                for r in c.execute(
+                    """SELECT id, rule, target, severity, summary, status, opened_at, resolved_at, acked_by, silenced
                    FROM alerts WHERE host = ? ORDER BY status = 'resolved', opened_at DESC LIMIT 20""",
-                (device["hostname"],))],
+                    (device["hostname"],),
+                )
+            ],
         }
         return jsonify(device)
 
@@ -198,8 +222,11 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @require()
     def export_inventory():
         audit("inventory_export")
-        return Response(inventory.export_csv(db()), mimetype="text/csv",
-                        headers={"Content-Disposition": "attachment; filename=inventory.csv"})
+        return Response(
+            inventory.export_csv(db()),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=inventory.csv"},
+        )
 
     @app.post("/api/v1/inventory/import")
     @require("admin")
@@ -210,8 +237,9 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
             return jsonify(error="csv text is required"), 400
         result = inventory.import_csv(db(), text, dry_run=dry_run)
         if result.ok and not dry_run:
-            audit("inventory_import", f"created {result.created}, updated {result.updated}, "
-                                      f"unchanged {result.unchanged}")
+            audit(
+                "inventory_import", f"created {result.created}, updated {result.updated}, unchanged {result.unchanged}"
+            )
         return jsonify(result.to_dict()), (200 if result.ok else 422)
 
     # ------------------------------------------------------------ monitoring
@@ -240,11 +268,16 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
             return jsonify(error="status must be open, resolved or all"), 400
         where, params = ("", ()) if status == "all" else ("WHERE status = ?", (status,))
         c = db()
-        rows = [dict(r) for r in c.execute(
-            f"""SELECT * FROM alerts {where}
+        rows = [
+            dict(r)
+            for r in c.execute(
+                f"""SELECT * FROM alerts {where}
                 ORDER BY status = 'resolved', acked_at IS NOT NULL,
                          CASE severity WHEN 'critical' THEN 0 ELSE 1 END, opened_at DESC
-                LIMIT 300""", params)]
+                LIMIT 300""",
+                params,
+            )
+        ]
         for r in rows:
             r["location"] = lookup.get_location(c, r["host"])
         return jsonify(count=len(rows), alerts=rows)
@@ -263,8 +296,10 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @require()
     def list_silences():
         now = to_text(utcnow())
-        rows = [dict(r) | {"active": r["starts_at"] <= now < r["ends_at"]} for r in db().execute(
-            "SELECT * FROM silences WHERE ends_at > ? ORDER BY starts_at", (now,))]
+        rows = [
+            dict(r) | {"active": r["starts_at"] <= now < r["ends_at"]}
+            for r in db().execute("SELECT * FROM silences WHERE ends_at > ? ORDER BY starts_at", (now,))
+        ]
         return jsonify(silences=rows)
 
     @app.post("/api/v1/silences")
@@ -275,10 +310,20 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
             starts = from_text(data["starts_at"]) if data.get("starts_at") else utcnow()
             ends = starts + timedelta(minutes=int(data["duration_minutes"]))
             with transaction(db()):
-                sid = alerts.add_silence(db(), str(data.get("host_pattern", "")), str(data.get("rule_pattern", "*")),
-                                         starts, ends, str(data.get("reason", "")), current_user()["username"])
-                audit("silence_create", f"#{sid} {data.get('host_pattern')} {data.get('rule_pattern', '*')} "
-                                        f"{data.get('duration_minutes')}min: {data.get('reason')}")
+                sid = alerts.add_silence(
+                    db(),
+                    str(data.get("host_pattern", "")),
+                    str(data.get("rule_pattern", "*")),
+                    starts,
+                    ends,
+                    str(data.get("reason", "")),
+                    current_user()["username"],
+                )
+                audit(
+                    "silence_create",
+                    f"#{sid} {data.get('host_pattern')} {data.get('rule_pattern', '*')} "
+                    f"{data.get('duration_minutes')}min: {data.get('reason')}",
+                )
         except (KeyError, ValueError, TypeError) as exc:
             return jsonify(error=f"Invalid silence: {exc}"), 400
         return jsonify(id=sid), 201
@@ -287,8 +332,10 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @require("operator")
     def end_silence(silence_id):
         with transaction(db()):
-            cur = db().execute("UPDATE silences SET ends_at = ? WHERE id = ? AND ends_at > ?",
-                               (to_text(utcnow()), silence_id, to_text(utcnow())))
+            cur = db().execute(
+                "UPDATE silences SET ends_at = ? WHERE id = ? AND ends_at > ?",
+                (to_text(utcnow()), silence_id, to_text(utcnow())),
+            )
             if cur.rowcount == 0:
                 return jsonify(error="No active or upcoming silence with that id"), 404
             audit("silence_end", f"#{silence_id}")
@@ -312,8 +359,12 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @app.get("/api/v1/users")
     @require("admin")
     def list_users():
-        rows = [dict(r) for r in db().execute(
-            "SELECT username, role, active, locked_until, created_at, last_login_at FROM users ORDER BY username")]
+        rows = [
+            dict(r)
+            for r in db().execute(
+                "SELECT username, role, active, locked_until, created_at, last_login_at FROM users ORDER BY username"
+            )
+        ]
         return jsonify(users=rows)
 
     @app.post("/api/v1/users")
@@ -322,8 +373,9 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         data = body()
         try:
             with transaction(db()):
-                auth.create_user(db(), str(data.get("username", "")), str(data.get("password", "")),
-                                 str(data.get("role", "viewer")))
+                auth.create_user(
+                    db(), str(data.get("username", "")), str(data.get("password", "")), str(data.get("role", "viewer"))
+                )
                 audit("user_create", f"{data.get('username')} as {data.get('role', 'viewer')}")
         except auth.AuthError as exc:
             return jsonify(error=str(exc)), 400
@@ -335,9 +387,13 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         data = body()
         try:
             with transaction(db()):
-                auth.update_user(db(), username, role=data.get("role"),
-                                 active=data.get("active") if isinstance(data.get("active"), bool) else None,
-                                 password=data.get("password"))
+                auth.update_user(
+                    db(),
+                    username,
+                    role=data.get("role"),
+                    active=data.get("active") if isinstance(data.get("active"), bool) else None,
+                    password=data.get("password"),
+                )
                 changes = ", ".join(f"{k}={'***' if k == 'password' else v}" for k, v in data.items())
                 audit("user_update", f"{username}: {changes}")
         except auth.AuthError as exc:
@@ -348,9 +404,13 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @require()
     def list_collectors():
         stale_before = to_text(utcnow() - timedelta(seconds=settings.collector_stale_seconds))
-        rows = [dict(r) | {"healthy": bool(r["last_seen_at"] and r["last_seen_at"] >= stale_before)}
-                for r in db().execute(
-                    "SELECT name, created_at, last_seen_at, last_ip, version, host_count, spooled FROM collectors ORDER BY name")]
+        rows = [
+            dict(r) | {"healthy": bool(r["last_seen_at"] and r["last_seen_at"] >= stale_before)}
+            for r in db().execute(
+                "SELECT name, created_at, last_seen_at, last_ip, version, host_count, spooled "
+                "FROM collectors ORDER BY name"
+            )
+        ]
         return jsonify(collectors=rows)
 
     @app.get("/api/v1/audit")

@@ -4,6 +4,7 @@ Secrets never live in these files: they reference environment variables
 (`*_env` keys), which come from the deployment (systemd EnvironmentFile,
 Docker secrets/.env, Ansible Vault).
 """
+
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,9 +27,9 @@ class ConfigError(ValueError):
 @dataclass
 class Channel:
     name: str
-    type: str                                  # email | wecom | dingtalk | slack
+    type: str  # email | wecom | dingtalk | slack
     min_severity: str = "warning"
-    datacenters: list[str] = field(default_factory=list)   # empty = all
+    datacenters: list[str] = field(default_factory=list)  # empty = all
     daily_report: bool = False
     settings: dict = field(default_factory=dict)
 
@@ -66,8 +67,11 @@ class ServerSettings:
 
     def collector_config(self) -> dict:
         """What collectors pull from GET /api/v1/collector/config."""
-        return {"interval_seconds": self.interval_seconds, "service_check": self.service_check,
-                "checks": [c.to_dict() for c in self.checks]}
+        return {
+            "interval_seconds": self.interval_seconds,
+            "service_check": self.service_check,
+            "checks": [c.to_dict() for c in self.checks],
+        }
 
 
 def load_server_config(path=DEFAULT_SERVER_CONFIG) -> ServerSettings:
@@ -91,7 +95,9 @@ def load_server_config(path=DEFAULT_SERVER_CONFIG) -> ServerSettings:
     _unique([c.name for c in channels], "channel")
 
     return ServerSettings(
-        rules=rules, checks=checks, channels=channels,
+        rules=rules,
+        checks=checks,
+        channels=channels,
         interval_seconds=int(collection.get("interval_seconds", 30)),
         service_check=collection.get("service_check", DEFAULT_SERVICE_CHECK),
         collector_stale_seconds=int(alerting.get("collector_stale_seconds", 120)),
@@ -133,14 +139,14 @@ class CollectorSettings:
     name: str
     central_url: str
     hosts: list[HostConfig]
-    token_env: str = "INSPECTOR_COLLECTOR_TOKEN"
-    ssh_client: str = "openssh"                # openssh (system ssh, keys) | paramiko
+    token_env: str = "INSPECTOR_COLLECTOR_TOKEN"  # noqa: S105 - name of an env var, not a secret
+    ssh_client: str = "openssh"  # openssh (system ssh, keys) | paramiko
     ssh_timeout: int = 10
     known_hosts: str | None = None
-    ssh_control_dir: str | None = None         # enables SSH connection reuse (openssh client)
+    ssh_control_dir: str | None = None  # enables SSH connection reuse (openssh client)
     max_workers: int = 20
     spool_path: str = "spool.db"
-    spool_max_batches: int = 20000             # ~1 week at 30 s; oldest dropped beyond this
+    spool_max_batches: int = 20000  # ~1 week at 30 s; oldest dropped beyond this
     config_refresh_seconds: int = 300
 
     @property
@@ -159,18 +165,24 @@ def load_collector_config(path) -> CollectorSettings:
     _unique([h.name for h in hosts], "host")
     control_dir = ssh.get("control_dir")
     if control_dir and len(str(control_dir)) > 46:
-        raise ConfigError(f"ssh.control_dir is too long ({len(str(control_dir))} chars, max 46): Unix socket "
-                          "paths are limited to 104 bytes; use a short path such as /run/inspector/ssh")
+        raise ConfigError(
+            f"ssh.control_dir is too long ({len(str(control_dir))} chars, max 46): Unix socket "
+            "paths are limited to 104 bytes; use a short path such as /run/inspector/ssh"
+        )
     if ssh.get("client", "openssh") not in ("openssh", "paramiko"):
         raise ConfigError("ssh.client must be openssh or paramiko")
     for key in ("name", "central_url"):
         if not raw.get(key):
             raise ConfigError(f"collector config needs '{key}'")
     return CollectorSettings(
-        name=raw["name"], central_url=raw["central_url"].rstrip("/"), hosts=hosts,
+        name=raw["name"],
+        central_url=raw["central_url"].rstrip("/"),
+        hosts=hosts,
         token_env=raw.get("token_env", "INSPECTOR_COLLECTOR_TOKEN"),
-        ssh_client=ssh.get("client", "openssh"), ssh_timeout=int(ssh.get("timeout", 10)),
-        known_hosts=ssh.get("known_hosts"), ssh_control_dir=ssh.get("control_dir"),
+        ssh_client=ssh.get("client", "openssh"),
+        ssh_timeout=int(ssh.get("timeout", 10)),
+        known_hosts=ssh.get("known_hosts"),
+        ssh_control_dir=ssh.get("control_dir"),
         max_workers=int(raw.get("max_workers", 20)),
         spool_path=raw.get("spool_path", "spool.db"),
         spool_max_batches=int(raw.get("spool_max_batches", 20000)),

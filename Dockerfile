@@ -6,6 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-client 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+LABEL org.opencontainers.image.source="https://github.com/zoeyxia212-glitch/dc-inspector" \
+      org.opencontainers.image.licenses="MIT"
 COPY inspector ./inspector
 COPY config ./config
 COPY docker/central/bootstrap.sh /usr/local/bin/bootstrap.sh

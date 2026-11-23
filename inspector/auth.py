@@ -7,6 +7,7 @@ Roles (each includes the one before):
 
 LDAP/AD single sign-on would replace `authenticate()`; roles and audit stay the same.
 """
+
 import hashlib
 import hmac
 import secrets
@@ -47,14 +48,21 @@ def create_user(conn: sqlite3.Connection, username: str, password: str, role: st
         raise AuthError(f"Role must be one of {ROLES}")
     _check_password_policy(password)
     try:
-        conn.execute("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
-                     (username, generate_password_hash(password), role, to_text(utcnow())))
+        conn.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (username, generate_password_hash(password), role, to_text(utcnow())),
+        )
     except sqlite3.IntegrityError as exc:
         raise AuthError(f"User {username} already exists") from exc
 
 
-def update_user(conn: sqlite3.Connection, username: str, role: str | None = None,
-                active: bool | None = None, password: str | None = None) -> None:
+def update_user(
+    conn: sqlite3.Connection,
+    username: str,
+    role: str | None = None,
+    active: bool | None = None,
+    password: str | None = None,
+) -> None:
     if not conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
         raise AuthError(f"No user {username}")
     if role is not None:
@@ -65,15 +73,17 @@ def update_user(conn: sqlite3.Connection, username: str, role: str | None = None
         conn.execute("UPDATE users SET active = ? WHERE username = ?", (int(active), username))
     if password is not None:
         _check_password_policy(password)
-        conn.execute("""UPDATE users SET password_hash = ?, failed_attempts = 0, locked_until = NULL
-                        WHERE username = ?""", (generate_password_hash(password), username))
+        conn.execute(
+            """UPDATE users SET password_hash = ?, failed_attempts = 0, locked_until = NULL
+                        WHERE username = ?""",
+            (generate_password_hash(password), username),
+        )
     admins = conn.execute("SELECT COUNT(*) FROM users WHERE role = 'admin' AND active = 1").fetchone()[0]
     if admins == 0:
         raise AuthError("At least one active admin is required")
 
 
-def authenticate(conn: sqlite3.Connection, username: str, password: str,
-                 now: datetime | None = None) -> dict:
+def authenticate(conn: sqlite3.Connection, username: str, password: str, now: datetime | None = None) -> dict:
     """Return the user row, or raise AuthError with a message that does not reveal which part was wrong."""
     now = now or utcnow()
     row = conn.execute("SELECT * FROM users WHERE username = ?", (username or "",)).fetchone()
@@ -85,13 +95,17 @@ def authenticate(conn: sqlite3.Connection, username: str, password: str,
     if not check_password_hash(row["password_hash"], password or ""):
         failed = row["failed_attempts"] + 1
         locked = to_text(now + LOCKOUT) if failed >= MAX_FAILED_LOGINS else None
-        conn.execute("UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?",
-                     (0 if locked else failed, locked, row["id"]))
+        conn.execute(
+            "UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?",
+            (0 if locked else failed, locked, row["id"]),
+        )
         raise AuthError("Invalid username or password")
     if not row["active"]:
         raise AuthError("Account disabled")
-    conn.execute("UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?",
-                 (to_text(now), row["id"]))
+    conn.execute(
+        "UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = ? WHERE id = ?",
+        (to_text(now), row["id"]),
+    )
     return {"id": row["id"], "username": row["username"], "role": row["role"]}
 
 
@@ -115,7 +129,8 @@ def register_collector(conn: sqlite3.Connection, name: str, token: str | None = 
     conn.execute(
         """INSERT INTO collectors (name, token_hash, created_at) VALUES (?, ?, ?)
            ON CONFLICT(name) DO UPDATE SET token_hash = excluded.token_hash""",
-        (name, _hash_token(token), to_text(utcnow())))
+        (name, _hash_token(token), to_text(utcnow())),
+    )
     return token
 
 
@@ -130,7 +145,8 @@ def collector_for_token(conn: sqlite3.Connection, token: str | None) -> str | No
 
 
 # ------------------------------------------------------------------ audit
-def audit(conn: sqlite3.Connection, username: str | None, action: str, detail: str = "",
-          ip: str | None = None) -> None:
-    conn.execute("INSERT INTO audit_log (at, username, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
-                 (to_text(utcnow()), username, action, detail[:1000], ip))
+def audit(conn: sqlite3.Connection, username: str | None, action: str, detail: str = "", ip: str | None = None) -> None:
+    conn.execute(
+        "INSERT INTO audit_log (at, username, action, detail, ip) VALUES (?, ?, ?, ?, ?)",
+        (to_text(utcnow()), username, action, detail[:1000], ip),
+    )

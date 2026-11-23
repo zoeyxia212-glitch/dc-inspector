@@ -14,10 +14,13 @@ def test_default_inventory_size(conn):
 
 
 def test_every_server_nic_is_cabled_to_a_switch(conn):
-    uncabled = count(conn, """
+    uncabled = count(
+        conn,
+        """
         SELECT COUNT(*) FROM ports p JOIN devices d ON d.id = p.device_id
         WHERE d.device_type = 'server'
-          AND p.id NOT IN (SELECT port_a_id FROM connections)""")
+          AND p.id NOT IN (SELECT port_a_id FROM connections)""",
+    )
     assert uncabled == 0
 
 

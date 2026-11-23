@@ -1,17 +1,21 @@
 from datetime import timedelta
 
 import pytest
+from conftest import HOST, PASSWORD, alerts_by, healthy
 
 from inspector.db import to_text, utcnow
-
-from conftest import HOST, PASSWORD, alerts_by, healthy
 
 TOKEN = {"Authorization": "Bearer north-token-0123456789abcdef"}
 
 
 def sample(host=HOST, seconds_ago=0, **overrides):
-    return {"host": host, "datacenter": "SH01", "up": 1,
-            "collected_at": to_text(utcnow() - timedelta(seconds=seconds_ago)), "values": healthy(**overrides)}
+    return {
+        "host": host,
+        "datacenter": "SH01",
+        "up": 1,
+        "collected_at": to_text(utcnow() - timedelta(seconds=seconds_ago)),
+        "values": healthy(**overrides),
+    }
 
 
 # ---------------------------------------------------------- login / roles
@@ -34,14 +38,19 @@ def test_logout(login):
     assert c.get("/api/v1/me").status_code == 401
 
 
-@pytest.mark.parametrize("user, ack, silence, admin", [
-    ("vera", 403, 403, 403), ("otto", 409, 201, 403), ("ada", 409, 201, 200)])
+@pytest.mark.parametrize(
+    "user, ack, silence, admin", [("vera", 403, 403, 403), ("otto", 409, 201, 403), ("ada", 409, 201, 200)]
+)
 def test_role_permissions(login, user, ack, silence, admin):
     c = login(user)
     assert c.get("/api/v1/hosts").status_code == 200
     assert c.post("/api/v1/alerts/999/ack", json={"note": "x"}).status_code == ack
-    assert c.post("/api/v1/silences", json={"host_pattern": "sh01-*", "duration_minutes": 60,
-                                             "reason": "CHG-1"}).status_code == silence
+    assert (
+        c.post(
+            "/api/v1/silences", json={"host_pattern": "sh01-*", "duration_minutes": 60, "reason": "CHG-1"}
+        ).status_code
+        == silence
+    )
     assert c.get("/api/v1/users").status_code == admin
 
 
@@ -52,7 +61,7 @@ def test_writes_must_be_json(login):
 
 
 def test_index_hides_admin_tab_for_viewer(login):
-    assert b'data-tab="admin"' in login("vera").get("/").data      # removed client-side by role
+    assert b'data-tab="admin"' in login("vera").get("/").data  # removed client-side by role
     assert b'const ROLE = "viewer"' in login("vera").get("/").data
 
 
@@ -60,8 +69,10 @@ def test_index_hides_admin_tab_for_viewer(login):
 def test_ingest_requires_token(app):
     c = app.test_client()
     assert c.post("/api/v1/ingest", json={"samples": [sample()]}).status_code == 401
-    assert c.post("/api/v1/ingest", json={"samples": [sample()]},
-                  headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert (
+        c.post("/api/v1/ingest", json={"samples": [sample()]}, headers={"Authorization": "Bearer wrong"}).status_code
+        == 401
+    )
     assert c.get("/api/v1/collector/config").status_code == 401
 
 
@@ -80,12 +91,17 @@ def test_ingest_is_idempotent(app, conn):
     assert row["host_count"] == 5 and row["version"] == "2.0.0" and row["last_seen_at"]
 
 
-@pytest.mark.parametrize("bad", [
-    {"samples": []}, {"samples": "x"}, {"samples": [{"host": "a b"}]},
-    {"samples": [{"host": "h", "collected_at": "yesterday"}]},
-    {"samples": [{"host": "h", "collected_at": to_text(utcnow() + timedelta(hours=1))}]},
-    {"samples": [{"host": "h", "collected_at": to_text(utcnow()), "values": {"cpu.percent": [1]}}]},
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"samples": []},
+        {"samples": "x"},
+        {"samples": [{"host": "a b"}]},
+        {"samples": [{"host": "h", "collected_at": "yesterday"}]},
+        {"samples": [{"host": "h", "collected_at": to_text(utcnow() + timedelta(hours=1))}]},
+        {"samples": [{"host": "h", "collected_at": to_text(utcnow()), "values": {"cpu.percent": [1]}}]},
+    ],
+)
 def test_ingest_validation(app, bad):
     assert app.test_client().post("/api/v1/ingest", json=bad, headers=TOKEN).status_code == 400
 
@@ -127,10 +143,13 @@ def test_silence_lifecycle(login):
 # ---------------------------------------------------------- admin
 def test_user_management(login):
     ada = login("ada")
-    assert ada.post("/api/v1/users", json={"username": "newbie", "password": PASSWORD, "role": "viewer"}).status_code == 201
+    assert (
+        ada.post("/api/v1/users", json={"username": "newbie", "password": PASSWORD, "role": "viewer"}).status_code
+        == 201
+    )
     assert ada.post("/api/v1/users", json={"username": "newbie", "password": PASSWORD}).status_code == 400
     assert ada.patch("/api/v1/users/newbie", json={"role": "operator"}).status_code == 200
-    assert ada.patch("/api/v1/users/ada", json={"role": "viewer"}).status_code == 400    # last admin
+    assert ada.patch("/api/v1/users/ada", json={"role": "viewer"}).status_code == 400  # last admin
     users = {u["username"]: u for u in ada.get("/api/v1/users").get_json()["users"]}
     assert users["newbie"]["role"] == "operator"
     assert "password_hash" not in users["newbie"]
@@ -180,8 +199,11 @@ def test_device_detail_includes_monitoring(app, login):
 
 def test_history_endpoint(app, login):
     c = app.test_client()
-    c.post("/api/v1/ingest", json={"samples": [sample(seconds_ago=60, **{"cpu.percent": 20.0}),
-                                               sample(**{"cpu.percent": 40.0})]}, headers=TOKEN)
+    c.post(
+        "/api/v1/ingest",
+        json={"samples": [sample(seconds_ago=60, **{"cpu.percent": 20.0}), sample(**{"cpu.percent": 40.0})]},
+        headers=TOKEN,
+    )
     data = login("vera").get(f"/api/v1/hosts/{HOST}/history?keys=cpu.percent&hours=1").get_json()
     assert [p[1] for p in data["series"]["cpu.percent"]] == [20.0, 40.0]
     assert login("vera").get(f"/api/v1/hosts/{HOST}/history?hours=0").status_code == 400
@@ -197,10 +219,14 @@ def test_inventory_export_and_import_permissions(login, conn):
     vera, ada = login("vera"), login("ada")
     res = vera.get("/api/v1/inventory/export.csv")
     assert res.status_code == 200 and res.mimetype == "text/csv"
-    new = "\n".join([res.data.decode().splitlines()[0],
-                     "AST-900001,new-srv01,10.99.0.1,server,Dell,R760,SH01-A01,30,online"]) + "\n"
+    new = (
+        "\n".join(
+            [res.data.decode().splitlines()[0], "AST-900001,new-srv01,10.99.0.1,server,Dell,R760,SH01-A01,30,online"]
+        )
+        + "\n"
+    )
     assert vera.post("/api/v1/inventory/import", json={"csv": new, "dry_run": False}).status_code == 403
-    dry = ada.post("/api/v1/inventory/import", json={"csv": new}).get_json()          # dry run by default
+    dry = ada.post("/api/v1/inventory/import", json={"csv": new}).get_json()  # dry run by default
     assert dry["ok"] and dry["dry_run"] and dry["created"] == 1
     assert conn.execute("SELECT COUNT(*) FROM devices WHERE asset_id='AST-900001'").fetchone()[0] == 0
     real = ada.post("/api/v1/inventory/import", json={"csv": new, "dry_run": False}).get_json()

@@ -1,5 +1,11 @@
 # DC Inspector
 
+[![CI](https://github.com/zoeyxia212-glitch/dc-inspector/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zoeyxia212-glitch/dc-inspector/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/zoeyxia212-glitch/dc-inspector/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/zoeyxia212-glitch/dc-inspector/actions/workflows/codeql.yml)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
+![Coverage gate](https://img.shields.io/badge/coverage%20gate-80%25-brightgreen)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Agentless data-centre inspection, alerting and device lookup for multi-site server fleets.
 
 A personal re-implementation of an internal tool I built as a junior engineer at VNET (2021–2022),
@@ -162,12 +168,19 @@ docker compose stop collector-south # collector_down for sh-south only
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m pytest                                   # 251 tests
+make install                                       # pip install -e ".[dev]"
+make check                                         # lint, format, types, tests + coverage gate (what CI runs)
+python -m pytest                                   # 268 tests
 python -m inspector.main init                      # schema + mock inventory
 python -m inspector.main create-user me --role admin
 python -m inspector.main server                    # http://127.0.0.1:8000
 ```
+
+Engineering standards: Ruff (lint + format, including security rules), mypy, an 80% coverage gate
+(currently ~92% of lines), compatibility tests on Python 3.10–3.13, CodeQL, pip-audit, Dependabot and
+an image vulnerability scan on every pull request; tagged releases publish a container image to
+GHCR with an SBOM. See [CONTRIBUTING.md](CONTRIBUTING.md) (branching model, release process),
+[SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md).
 
 CLI: `init | create-user | add-collector | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices | backup | verify-backup`
 
@@ -221,7 +234,7 @@ config/         server.yaml, rules.yaml, collectors/*.yaml
 docker/         host image (sshd, nginx, stress-ng), central bootstrap
 deploy/         ansible/, systemd/
 scripts/        benchmark.py (load test)
-tests/          251 pytest tests
+tests/          268 pytest tests
 ```
 
 Python 3.10+ · Flask · SQLite · OpenSSH / paramiko · Jinja2 · pytest · Docker Compose · Ansible · systemd
