@@ -235,3 +235,30 @@ def test_inventory_export_and_import_permissions(login, conn):
     assert bad.status_code == 422 and "unknown rack" in bad.get_json()["errors"][0]
     actions = [r[0] for r in conn.execute("SELECT action FROM audit_log")]
     assert actions.count("inventory_import") == 1 and "inventory_export" in actions
+
+
+@pytest.mark.parametrize(
+    "path, body, expected",
+    [
+        (
+            "/api/v1/silences",
+            {"host_pattern": "*", "duration_minutes": "abc", "reason": "x"},
+            "duration_minutes must be",
+        ),
+        (
+            "/api/v1/silences",
+            {"host_pattern": "*", "duration_minutes": 60, "reason": "x", "starts_at": "soon"},
+            "starts_at must look like",
+        ),
+    ],
+)
+def test_bad_input_gets_a_safe_message(login, path, body, expected):
+    """Only messages written for the client are returned, never raw exception text (CodeQL)."""
+    res = login("otto").post(path, json=body)
+    assert res.status_code == 400 and expected in res.get_json()["error"]
+    assert "invalid literal" not in res.get_json()["error"]
+
+
+def test_bad_history_hours_message(login):
+    res = login("vera").get("/api/v1/hosts/x/history?hours=abc")
+    assert res.status_code == 400 and res.get_json()["error"] == "hours must be a whole number"

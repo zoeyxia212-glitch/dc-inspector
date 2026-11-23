@@ -22,7 +22,7 @@ Pinger = Callable[[str], int]
 # Why SSH failed decides who should act: network/hardware team, the host's admin, or security.
 ERROR_CLASSES = [
     ("auth_failed", ("permission denied", "authentication failed", "auth fail")),
-    ("host_key", ("host key verification failed", "remote host identification has changed")),
+    ("host_key", ("host key verification failed", "remote host identification has changed", "does not match")),
     ("refused", ("connection refused",)),
     (
         "dns",

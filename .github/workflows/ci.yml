@@ -67,7 +67,10 @@ jobs:
         with: {python-version: "3.12", cache: pip}
       - run: pip install "pip-audit>=2.7"
       - name: Known vulnerabilities in runtime dependencies
-        run: pip-audit -r requirements.txt --strict
+        # The table also goes to the job summary, so the result is readable without the raw log.
+        run: |
+          set -o pipefail
+          pip-audit -r requirements.txt --strict --desc --format markdown | tee -a "$GITHUB_STEP_SUMMARY"
 
   # Job name `docker` is a required status check in the branch ruleset: keep it.
   docker:
@@ -80,7 +83,7 @@ jobs:
       - run: docker compose config --quiet
       - run: docker compose build
       - name: Image vulnerability report (informational)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0, pinned by commit
         with:
           image-ref: dcinspector-app:latest
           severity: CRITICAL,HIGH

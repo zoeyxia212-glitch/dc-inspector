@@ -142,7 +142,8 @@ class CollectorSettings:
     token_env: str = "INSPECTOR_COLLECTOR_TOKEN"  # noqa: S105 - name of an env var, not a secret
     ssh_client: str = "openssh"  # openssh (system ssh, keys) | paramiko
     ssh_timeout: int = 10
-    known_hosts: str | None = None
+    known_hosts: str | None = None  # default: known_hosts next to the spool
+    host_key_policy: str = "tofu"  # tofu (trust on first use) | strict (pre-loaded keys only)
     ssh_control_dir: str | None = None  # enables SSH connection reuse (openssh client)
     max_workers: int = 20
     spool_path: str = "spool.db"
@@ -169,6 +170,9 @@ def load_collector_config(path) -> CollectorSettings:
             f"ssh.control_dir is too long ({len(str(control_dir))} chars, max 46): Unix socket "
             "paths are limited to 104 bytes; use a short path such as /run/inspector/ssh"
         )
+    if ssh.get("host_key_policy", "tofu") not in ("tofu", "strict"):
+        raise ConfigError("ssh.host_key_policy must be tofu or strict")
+    spool = raw.get("spool_path", "spool.db")
     if ssh.get("client", "openssh") not in ("openssh", "paramiko"):
         raise ConfigError("ssh.client must be openssh or paramiko")
     for key in ("name", "central_url"):
@@ -181,7 +185,9 @@ def load_collector_config(path) -> CollectorSettings:
         token_env=raw.get("token_env", "INSPECTOR_COLLECTOR_TOKEN"),
         ssh_client=ssh.get("client", "openssh"),
         ssh_timeout=int(ssh.get("timeout", 10)),
-        known_hosts=ssh.get("known_hosts"),
+        known_hosts=ssh.get("known_hosts") or os.path.join(os.path.dirname(spool) or ".", "known_hosts"),
+        # an explicitly provided known_hosts file used to mean "strict": keep that meaning
+        host_key_policy=ssh.get("host_key_policy", "strict" if ssh.get("known_hosts") else "tofu"),
         ssh_control_dir=ssh.get("control_dir"),
         max_workers=int(raw.get("max_workers", 20)),
         spool_path=raw.get("spool_path", "spool.db"),

@@ -17,6 +17,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from inspector.db import inserted_id, to_text, utcnow
+from inspector.errors import InputError
 from inspector.rules import Rule, evaluate_rule
 
 COLLECTOR_RULE = "collector_down"
@@ -204,11 +205,11 @@ def add_silence(
     created_by: str,
 ) -> int:
     if ends_at <= starts_at:
-        raise ValueError("Silence must end after it starts")
+        raise InputError("Silence must end after it starts")
     if ends_at - starts_at > timedelta(days=30):
-        raise ValueError("Silences longer than 30 days are not allowed")
+        raise InputError("Silences longer than 30 days are not allowed")
     if not reason.strip():
-        raise ValueError("A reason is required (e.g. change ticket number)")
+        raise InputError("A reason is required (e.g. change ticket number)")
     sid = inserted_id(
         conn.execute(
             """INSERT INTO silences (host_pattern, rule_pattern, starts_at, ends_at, reason,

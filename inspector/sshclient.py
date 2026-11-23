@@ -7,7 +7,9 @@ Two interchangeable backends (choose with collector.ssh_client in config.yaml):
 """
 
 import logging
+import os
 import subprocess
+import threading
 
 log = logging.getLogger(__name__)
 # Unix socket paths are limited (108 bytes on Linux, 104 on macOS). ssh names the control
@@ -49,6 +51,7 @@ class OpenSSHRunner:
         known_hosts: str | None = None,
         control_dir: str | None = None,
         control_persist: int = 120,
+        strict_host_keys: bool = False,
     ):
         self.address = address
         self.port = port
@@ -58,6 +61,7 @@ class OpenSSHRunner:
         self.known_hosts = known_hosts
         self.control_dir = control_dir  # reuse one SSH connection per host across rounds
         self.control_persist = control_persist
+        self.strict_host_keys = strict_host_keys
 
     def build_args(self, command: str) -> list[str]:
         args = [
@@ -71,11 +75,11 @@ class OpenSSHRunner:
             "-o",
             "LogLevel=ERROR",
         ]
+        # strict: only keys already in known_hosts. Otherwise trust on first use (accept-new):
+        # a new host's key is recorded, and a CHANGED key is refused -> host_key_changed alert.
         if self.known_hosts:
-            args += ["-o", f"UserKnownHostsFile={self.known_hosts}", "-o", "StrictHostKeyChecking=yes"]
-        else:
-            # Lab mode: accept unknown host keys. Production should pass known_hosts.
-            args += ["-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no"]
+            args += ["-o", f"UserKnownHostsFile={self.known_hosts}"]
+        args += ["-o", f"StrictHostKeyChecking={'yes' if self.strict_host_keys else 'accept-new'}"]
         if self.key_file:
             args += ["-i", self.key_file, "-o", "IdentitiesOnly=yes"]
         if control_dir_usable(self.control_dir):
@@ -102,6 +106,36 @@ class OpenSSHRunner:
         return result.stdout
 
 
+_known_hosts_lock = threading.Lock()
+
+
+def trust_on_first_use_policy(path: str):
+    """Paramiko policy: record an unknown host's key in `path` (like OpenSSH accept-new).
+
+    Keys already in the file are verified by paramiko itself, so a changed key is refused.
+    """
+    import paramiko
+
+    class TrustOnFirstUse(paramiko.MissingHostKeyPolicy):
+        def missing_host_key(self, client, hostname, key):
+            with _known_hosts_lock:  # collectors connect to many hosts in parallel
+                keys = paramiko.HostKeys()
+                if os.path.exists(path):
+                    keys.load(path)
+                keys.add(hostname, key.get_name(), key)
+                keys.save(path)
+            client.get_host_keys().add(hostname, key.get_name(), key)
+            log.warning(
+                "Recorded new SSH host key for %s (%s %s) in %s",
+                hostname,
+                key.get_name(),
+                key.get_fingerprint().hex(),
+                path,
+            )
+
+    return TrustOnFirstUse()
+
+
 class SSHRunner:
     def __init__(
         self,
@@ -112,6 +146,7 @@ class SSHRunner:
         key_file: str | None = None,
         timeout: int = 10,
         known_hosts: str | None = None,
+        strict_host_keys: bool = False,
     ):
         self.address = address
         self.port = port
@@ -120,17 +155,18 @@ class SSHRunner:
         self.key_file = key_file
         self.timeout = timeout
         self.known_hosts = known_hosts
+        self.strict_host_keys = strict_host_keys
 
     def run(self, command: str) -> str:
         import paramiko  # imported here so tests and the web app don't need it
 
         client = paramiko.SSHClient()
-        if self.known_hosts:
-            client.load_host_keys(self.known_hosts)
+        if self.known_hosts and os.path.exists(self.known_hosts):
+            client.load_host_keys(self.known_hosts)  # a changed key now raises BadHostKeyException
+        if self.strict_host_keys or not self.known_hosts:
             client.set_missing_host_key_policy(paramiko.RejectPolicy())
         else:
-            # Lab mode: accept unknown host keys. Production should pass known_hosts.
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # noqa: S507 - lab mode, documented
+            client.set_missing_host_key_policy(trust_on_first_use_policy(self.known_hosts))
         try:
             client.connect(
                 self.address,
