@@ -5,5 +5,5 @@ inspector_etc: /etc/dc-inspector
 inspector_repo: https://github.com/YOUR-USER/dc-inspector.git
 central_url: "http://{{ hostvars[groups['central'][0]].ansible_host }}:8000"
 # Secrets — define in an encrypted vault file, never in plain text:
-#   vault_secret_key, vault_admin_password, vault_collector_tokens: {sh-north: ..., sh-south: ...}
+#   vault_secret_key, vault_admin_password, vault_collector_tokens: {sh-north: ..., sh-south: ...}  (values from: python -m inspector.main gen-token)
 #   vault_wecom_webhook, vault_dingtalk_webhook, vault_dingtalk_secret, vault_slack_webhook, vault_smtp_password

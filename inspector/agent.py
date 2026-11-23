@@ -1,13 +1,15 @@
 """Regional collector agent: one per site, runs next to the hosts it inspects.
 
-  - pulls interval + custom checks from the central server (cached locally)
-  - collects all its hosts in parallel over SSH every interval
-  - store-and-forward: every batch goes to a local spool first, then is sent
-    oldest-first; if the central server or the WAN link is down, data is kept
-    and delivered later (the server de-duplicates re-sent samples)
+- pulls interval + custom checks from the central server (cached locally)
+- collects all its hosts in parallel over SSH every interval
+- store-and-forward: every batch goes to a local spool first, then is sent
+  oldest-first; if the central server or the WAN link is down, data is kept
+  and delivered later (the server de-duplicates re-sent samples)
 """
+
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -17,6 +19,7 @@ import urllib.request
 from inspector import __version__
 from inspector.collector import RunnerFactory, collect_all
 from inspector.config import CollectorSettings
+from inspector.notify import require_http_url
 from inspector.parsers import DEFAULT_SERVICE_CHECK, CheckDef
 from inspector.sshclient import OpenSSHRunner, SSHRunner
 
@@ -30,15 +33,22 @@ class CentralError(RuntimeError):
 
 class CentralClient:
     def __init__(self, base_url: str, token: str | None, timeout: int = 15):
-        self.base_url, self.token, self.timeout = base_url.rstrip("/"), token, timeout
+        self.base_url, self.token, self.timeout = require_http_url(base_url).rstrip("/"), token, timeout
 
     def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
         data = json.dumps(payload).encode() if payload is not None else None
-        req = urllib.request.Request(self.base_url + path, data=data, method=method, headers={
-            "Authorization": f"Bearer {self.token}", "Content-Type": "application/json",
-            "User-Agent": f"dc-inspector-collector/{__version__}"})
+        req = urllib.request.Request(  # noqa: S310 - base_url scheme checked in __init__
+            self.base_url + path,
+            data=data,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "User-Agent": f"dc-inspector-collector/{__version__}",
+            },
+        )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 - scheme checked
                 return json.loads(resp.read() or b"{}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:200]
@@ -70,8 +80,10 @@ class Spool:
             log.error("Spool full: dropped %d oldest batches", over)
 
     def oldest(self, limit: int) -> list[tuple[int, list]]:
-        return [(r[0], json.loads(r[1])) for r in
-                self.conn.execute("SELECT id, payload FROM spool ORDER BY id LIMIT ?", (limit,))]
+        return [
+            (r[0], json.loads(r[1]))
+            for r in self.conn.execute("SELECT id, payload FROM spool ORDER BY id LIMIT ?", (limit,))
+        ]
 
     def delete(self, ids: list[int]) -> None:
         self.conn.executemany("DELETE FROM spool WHERE id = ?", [(i,) for i in ids])
@@ -90,38 +102,67 @@ class Spool:
 def ssh_runner_factory(settings: CollectorSettings) -> RunnerFactory:
     def make(host):
         if settings.ssh_client == "openssh":
-            return OpenSSHRunner(host.address, host.port, host.username, host.key_file,
-                                 settings.ssh_timeout, settings.known_hosts)
-        return SSHRunner(host.address, host.port, host.username, host.password, host.key_file,
-                         settings.ssh_timeout, settings.known_hosts)
+            return OpenSSHRunner(
+                host.address,
+                host.port,
+                host.username,
+                host.key_file,
+                settings.ssh_timeout,
+                settings.known_hosts,
+                settings.ssh_control_dir,
+                strict_host_keys=settings.host_key_policy == "strict",
+            )
+        return SSHRunner(
+            host.address,
+            host.port,
+            host.username,
+            host.password,
+            host.key_file,
+            settings.ssh_timeout,
+            settings.known_hosts,
+            strict_host_keys=settings.host_key_policy == "strict",
+        )
+
     return make
 
 
 class Agent:
-    def __init__(self, settings: CollectorSettings, client: CentralClient | None = None,
-                 runner_factory: RunnerFactory | None = None, spool: Spool | None = None):
+    def __init__(
+        self,
+        settings: CollectorSettings,
+        client: CentralClient | None = None,
+        runner_factory: RunnerFactory | None = None,
+        spool: Spool | None = None,
+    ):
         self.settings = settings
         self.client = client or CentralClient(settings.central_url, settings.token)
         self.runner_factory = runner_factory or ssh_runner_factory(settings)
         self.spool = spool or Spool(settings.spool_path, settings.spool_max_batches)
+        if settings.ssh_control_dir:
+            os.makedirs(settings.ssh_control_dir, mode=0o700, exist_ok=True)
         self.remote = self.spool.get("remote_config") or dict(DEFAULT_REMOTE_CONFIG)
-        self._config_fetched_at = None
+        self._config_fetched_at: float | None = None
 
     def refresh_config(self, force: bool = False) -> None:
-        due = self._config_fetched_at is None or \
-            time.monotonic() - self._config_fetched_at >= self.settings.config_refresh_seconds
+        due = (
+            self._config_fetched_at is None
+            or time.monotonic() - self._config_fetched_at >= self.settings.config_refresh_seconds
+        )
         if not (force or due):
             return
         try:
             remote = self.client.get_config()
-            [CheckDef(**c) for c in remote.get("checks", [])]       # validate before use
+            [CheckDef(**c) for c in remote.get("checks", [])]  # validate before use
         except (CentralError, TypeError, ValueError) as exc:
             log.warning("Could not refresh config from central (%s); using cached config", exc)
             self._config_fetched_at = time.monotonic() - self.settings.config_refresh_seconds + 60
             return
         if remote != self.remote:
-            log.info("Config from central: interval %ss, %d custom checks",
-                     remote.get("interval_seconds"), len(remote.get("checks", [])))
+            log.info(
+                "Config from central: interval %ss, %d custom checks",
+                remote.get("interval_seconds"),
+                len(remote.get("checks", [])),
+            )
         self.remote = remote
         self.spool.put("remote_config", remote)
         self._config_fetched_at = time.monotonic()
@@ -132,9 +173,13 @@ class Agent:
 
     def collect(self) -> list[dict]:
         checks = [CheckDef(**c) for c in self.remote.get("checks", [])]
-        return collect_all(self.settings.hosts, self.runner_factory, checks,
-                           self.remote.get("service_check", DEFAULT_SERVICE_CHECK),
-                           self.settings.max_workers)
+        return collect_all(
+            self.settings.hosts,
+            self.runner_factory,
+            checks,
+            self.remote.get("service_check", DEFAULT_SERVICE_CHECK),
+            self.settings.max_workers,
+        )
 
     def flush(self, max_batches: int = 50) -> int:
         """Send spooled batches oldest-first. Stops at the first failure (order is preserved)."""
@@ -145,9 +190,15 @@ class Agent:
                 return sent
             samples = [s for _, b in batch for s in b]
             try:
-                self.client.send({"collector": self.settings.name, "version": __version__,
-                                  "host_count": len(self.settings.hosts),
-                                  "spooled": self.spool.count() - len(batch), "samples": samples})
+                self.client.send(
+                    {
+                        "collector": self.settings.name,
+                        "version": __version__,
+                        "host_count": len(self.settings.hosts),
+                        "spooled": self.spool.count() - len(batch),
+                        "samples": samples,
+                    }
+                )
             except CentralError as exc:
                 if "HTTP 4" in str(exc) and "HTTP 401" not in str(exc) and "HTTP 429" not in str(exc):
                     # The server rejected this data as invalid: drop it rather than block the queue forever.
@@ -168,13 +219,19 @@ class Agent:
         sent = self.flush()
         down = sum(1 for s in samples if not s["up"])
         result = {"hosts": len(samples), "down": down, "sent_batches": sent, "spooled": self.spool.count()}
-        log.info("Round: %(hosts)d hosts, %(down)d unreachable, sent %(sent_batches)d batches, "
-                 "%(spooled)d waiting in spool", result)
+        log.info(
+            "Round: %(hosts)d hosts, %(down)d unreachable, sent %(sent_batches)d batches, %(spooled)d waiting in spool",
+            result,
+        )
         return result
 
     def run_forever(self, stop: threading.Event) -> None:
-        log.info("Collector %s: %d hosts, central %s", self.settings.name,
-                 len(self.settings.hosts), self.settings.central_url)
+        log.info(
+            "Collector %s: %d hosts, central %s",
+            self.settings.name,
+            len(self.settings.hosts),
+            self.settings.central_url,
+        )
         self.refresh_config(force=True)
         while not stop.is_set():
             started = time.monotonic()

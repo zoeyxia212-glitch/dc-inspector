@@ -1,11 +1,13 @@
 # One image for both roles: central (web / scheduler) and collector (agent).
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client \
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client iputils-ping \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 999 --home /var/lib/inspector --create-home inspector
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+LABEL org.opencontainers.image.source="https://github.com/zoeyxia212-glitch/dc-inspector" \
+      org.opencontainers.image.licenses="MIT"
 COPY inspector ./inspector
 COPY config ./config
 COPY docker/central/bootstrap.sh /usr/local/bin/bootstrap.sh

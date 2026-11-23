@@ -1,0 +1,124 @@
+# Central server: web/API and scheduler as two containers in ONE pod sharing one volume.
+# SQLite allows one writer host, so replicas stay at 1 with the Recreate strategy; scale-out
+# would start with moving the database to PostgreSQL (see README, Performance).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: central-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 10Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: central
+  labels: {app.kubernetes.io/name: central}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: central}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: central}
+    spec:
+      securityContext: &podsec
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: migrate          # schema migrations + first admin + collector tokens (idempotent)
+          image: ghcr.io/zoeyxia212-glitch/dc-inspector
+          command: ["/usr/local/bin/bootstrap.sh"]
+          env: &centralenv
+            - {name: INSPECTOR_DB, value: /var/lib/inspector/inspector.db}
+            - {name: INSPECTOR_REPORTS, value: /var/lib/inspector/reports}
+            - {name: INSPECTOR_SERVER_CONFIG, value: /etc/dc-inspector/server.yaml}
+            - {name: INSPECTOR_PUBLIC_URL, value: "https://dc-inspector.example.com"}
+            - {name: INSPECTOR_SECURE_COOKIES, value: "1"}
+            - {name: LOG_FORMAT, value: json}
+          envFrom:
+            - secretRef: {name: central-secrets}
+          securityContext: &containersec
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts: &centralmounts
+            - {name: data, mountPath: /var/lib/inspector}
+            - {name: config, mountPath: /etc/dc-inspector, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      containers:
+        - name: web
+          image: ghcr.io/zoeyxia212-glitch/dc-inspector
+          args: ["gunicorn", "-w", "2", "-b", "0.0.0.0:8000", "--access-logfile", "-",
+                 "inspector.app:create_app()"]
+          ports: [{name: http, containerPort: 8000}]
+          env: *centralenv
+          envFrom:
+            - secretRef: {name: central-secrets}
+          securityContext: *containersec
+          volumeMounts: *centralmounts
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:            # process answers; does not depend on the database
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:           # database reachable and schema current
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+            limits: {cpu: "1", memory: 512Mi}
+        - name: scheduler
+          image: ghcr.io/zoeyxia212-glitch/dc-inspector
+          args: ["python", "-m", "inspector.main", "scheduler"]
+          env: *centralenv
+          envFrom:
+            - secretRef: {name: central-secrets}
+          securityContext: *containersec
+          volumeMounts: *centralmounts
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: central-data}
+        - name: config
+          configMap: {name: central-config}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: central
+spec:
+  selector: {app.kubernetes.io/name: central}
+  ports: [{name: http, port: 8000, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: central
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [dc-inspector.example.com]
+      secretName: dc-inspector-tls
+  rules:
+    - host: dc-inspector.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: central, port: {name: http}}

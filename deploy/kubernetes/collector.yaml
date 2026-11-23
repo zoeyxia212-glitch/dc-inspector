@@ -1,0 +1,71 @@
+# One collector per site. This is site sh-north; copy it (and its ConfigMap entry in
+# kustomization.yaml) per site. In practice a collector usually runs in, or next to, the site
+# network it inspects - a cluster in that site, or a VM with the systemd unit in deploy/systemd.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: collector-sh-north-spool
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}       # store-and-forward spool survives pod restarts
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector-sh-north
+  labels: {app.kubernetes.io/name: collector, dc-inspector/site: sh-north}
+spec:
+  replicas: 1                      # one collector per site; two would inspect every host twice
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: collector, dc-inspector/site: sh-north}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: collector, dc-inspector/site: sh-north}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+        sysctls:
+          # unprivileged ICMP: ping for failure diagnosis without the NET_RAW capability
+          - {name: net.ipv4.ping_group_range, value: "0 2147483647"}
+      containers:
+        - name: collector
+          image: ghcr.io/zoeyxia212-glitch/dc-inspector
+          args: ["python", "-m", "inspector.main", "agent", "--config", "/etc/dc-inspector/collector.yaml"]
+          env:
+            - {name: LOG_FORMAT, value: json}
+            - name: INSPECTOR_COLLECTOR_TOKEN
+              valueFrom: {secretKeyRef: {name: collector-sh-north, key: token}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/dc-inspector, readOnly: true}
+            - {name: ssh-key, mountPath: /keys, readOnly: true}
+            - {name: spool, mountPath: /var/lib/inspector}
+            - {name: ssh-control, mountPath: /run/inspector}
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: config
+          configMap: {name: collector-sh-north}
+        - name: ssh-key
+          secret:
+            secretName: collector-sh-north
+            items: [{key: ssh-private-key, path: id_ed25519}]
+            defaultMode: 0400
+        - name: spool
+          persistentVolumeClaim: {claimName: collector-sh-north-spool}
+        - name: ssh-control           # short path: Unix socket limit (see sshclient.py)
+          emptyDir: {medium: Memory}
+        - name: tmp
+          emptyDir: {}

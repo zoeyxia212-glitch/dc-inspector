@@ -1,0 +1,29 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes: {label: What happened, description: "Include the exact error or alert text."}
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes: {label: What you expected}
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes: {label: Steps to reproduce, placeholder: "1. ...\n2. ..."}
+    validations: {required: true}
+  - type: input
+    id: version
+    attributes: {label: Version, description: "Shown at /health, e.g. 2.1.0"}
+    validations: {required: true}
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [central web/API, scheduler, collector, alert rules, notifications, inventory, deployment]
+    validations: {required: true}
+  - type: textarea
+    id: logs
+    attributes: {label: Logs, description: "Remove secrets, tokens and real hostnames.", render: text}

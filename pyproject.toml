@@ -1,0 +1,115 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dc-inspector"
+dynamic = ["version"]
+description = "Agentless data-centre inspection, alerting and device lookup for multi-site server fleets"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Zoey Xia" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "flask>=3.0,<4",
+    "pyyaml>=6.0,<7",
+    "paramiko>=5.0,<6",
+    "gunicorn>=22.0,<24",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-PyYAML",
+    "types-paramiko",
+    "pip-audit>=2.7",
+]
+
+[project.scripts]
+dc-inspector = "inspector.main:main"
+
+[project.urls]
+Repository = "https://github.com/zoeyxia212-glitch/dc-inspector"
+Changelog = "https://github.com/zoeyxia212-glitch/dc-inspector/blob/main/CHANGELOG.md"
+
+[tool.setuptools.dynamic]
+version = { attr = "inspector.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["inspector*"]
+
+[tool.setuptools.package-data]
+inspector = ["templates/*.html", "openapi.yaml"]
+
+# ------------------------------------------------------------------ tests
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test*.py"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+source = ["inspector"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+# ------------------------------------------------------------------ lint / format
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import order
+    "B",        # bugbear: likely bugs
+    "UP",       # modern syntax
+    "S",        # bandit: security
+    "SIM",      # simplifications
+    "C4",       # comprehensions
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "S101",     # assert is fine in tests
+    "S603", "S607",  # subprocess with fixed args (ssh, ping) is intended
+    "S608",     # SQL built only from constant fragments; values are always bound parameters
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S108", "B017", "RUF012"]
+"scripts/*" = ["S311", "E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ------------------------------------------------------------------ types
+[tool.mypy]
+python_version = "3.10"
+files = ["inspector"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true

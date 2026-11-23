@@ -1,19 +1,22 @@
 """Collector agent: config pull, store-and-forward, behaviour during central outages."""
+
 import pytest
+from testparsers import SAMPLE_OUTPUT
 
 from inspector import agent
 from inspector.agent import Agent, CentralError, Spool
 from inspector.config import CollectorSettings, HostConfig
-
-from testparsers import SAMPLE_OUTPUT
 
 
 class FakeCentral:
     def __init__(self):
         self.up = True
         self.received = []
-        self.config = {"interval_seconds": 15, "service_check": "pgrep -x {name} >/dev/null && echo active || echo inactive",
-                       "checks": [{"name": "zombies", "command": "echo 3", "type": "number", "pattern": None, "timeout": 5}]}
+        self.config = {
+            "interval_seconds": 15,
+            "service_check": "pgrep -x {name} >/dev/null && echo active || echo inactive",
+            "checks": [{"name": "zombies", "command": "echo 3", "type": "number", "pattern": None, "timeout": 5}],
+        }
         self.reject = False
 
     def get_config(self):
@@ -46,10 +49,17 @@ class Runner:
 @pytest.fixture()
 def make_agent(tmp_path):
     def _make(central, hosts=("h1", "h2")):
-        settings = CollectorSettings(name="sh-north", central_url="http://central", spool_path=str(tmp_path / "spool.db"),
-                                     hosts=[HostConfig(name=h, address=h, datacenter="SH01",
-                                                       mounts=["/", "/data"], services=["nginx"]) for h in hosts])
+        settings = CollectorSettings(
+            name="sh-north",
+            central_url="http://central",
+            spool_path=str(tmp_path / "spool.db"),
+            hosts=[
+                HostConfig(name=h, address=h, datacenter="SH01", mounts=["/", "/data"], services=["nginx"])
+                for h in hosts
+            ],
+        )
         return Agent(settings, client=central, runner_factory=Runner)
+
     return _make
 
 
@@ -85,7 +95,7 @@ def test_outage_spools_then_delivers_in_order(make_agent):
     result = a.run_once()
     assert result["sent_batches"] == 4 and result["spooled"] == 0
     times = [s["collected_at"] for p in central.received for s in p["samples"]]
-    assert times == sorted(times)                                   # oldest first
+    assert times == sorted(times)  # oldest first
 
 
 def test_spool_survives_restart(make_agent):
@@ -93,7 +103,7 @@ def test_spool_survives_restart(make_agent):
     central.up = False
     make_agent(central).run_once()
     central.up = True
-    restarted = make_agent(central)                                 # same spool file
+    restarted = make_agent(central)  # same spool file
     assert restarted.spool.count() == 1
     assert restarted.flush() == 1 and restarted.spool.count() == 0
 
@@ -124,7 +134,8 @@ def test_spool_cap_drops_oldest(tmp_path):
 
 def test_factory_picks_ssh_backend():
     from inspector.sshclient import OpenSSHRunner, SSHRunner
+
     host = HostConfig(name="a", address="a", datacenter="SH01")
-    base = dict(name="c", central_url="http://x", hosts=[host])
+    base = {"name": "c", "central_url": "http://x", "hosts": [host]}
     assert isinstance(agent.ssh_runner_factory(CollectorSettings(**base))(host), OpenSSHRunner)
     assert isinstance(agent.ssh_runner_factory(CollectorSettings(**base, ssh_client="paramiko"))(host), SSHRunner)

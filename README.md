@@ -1,5 +1,11 @@
 # DC Inspector
 
+[![CI](https://github.com/zoeyxia212-glitch/dc-inspector/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zoeyxia212-glitch/dc-inspector/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/zoeyxia212-glitch/dc-inspector/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/zoeyxia212-glitch/dc-inspector/actions/workflows/codeql.yml)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)
+![Coverage gate](https://img.shields.io/badge/coverage%20gate-80%25-brightgreen)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Agentless data-centre inspection, alerting and device lookup for multi-site server fleets.
 
 A personal re-implementation of an internal tool I built as a junior engineer at VNET (2021–2022),
@@ -73,6 +79,24 @@ they were collected, so a problem that started and ended during the gap is still
 right times. If one site goes silent → `collector_down` for that site; if *every* site goes silent
 at once → a single `ingest_stalled` alert on the central server instead of blaming every site.
 
+**Failure diagnosis** — when SSH fails, the collector classifies the error and pings the host, so the
+alert tells people *who* should act, not just "something is wrong":
+
+| SSH error | ping | Alert | Who acts |
+|---|---|---|---|
+| timeout / unreachable | no reply (or ping unavailable) | `host_down` | hardware / network |
+| refused / timeout | replies | `ssh_down` | host admin (sshd, firewall) |
+| permission denied | any | `ssh_auth_failed` (warning) | whoever changed keys/accounts |
+| host key changed | any | `host_key_changed` | security: reinstall or MITM? |
+
+Rule expressions use three-valued logic like SQL `NULL` (`false and <no data>` = false), so a
+recovered host with no ping data still resolves its alert, while missing data alone never does.
+
+**Rack-aware correlation** — when several hosts in the same rack go down in the same round
+(default 3+), the likely cause is shared: top-of-rack switch, PDU or rack power. Instead of a storm of
+`host_down` alerts, one `rack_outage` alert is raised naming the rack's ToR switch; the host alerts are
+attached to it (still visible, not notified one by one) and the rack alert resolves when they all recover.
+
 **Notifications** — email (SMTP), 企业微信 WeCom robot, 钉钉 DingTalk robot (HMAC-signed), Slack.
 Routing by severity and data centre. Sent from an **outbox** with exponential-backoff retries, so a
 slow mail server never blocks ingest and nothing is lost on restart. Every alert carries its rack
@@ -119,27 +143,87 @@ docker compose start central        # spool is flushed, history back-filled
 docker compose stop collector-south # collector_down for sh-south only
 ```
 
+## Deploy on Kubernetes
+
+`deploy/kubernetes/` (kustomize): `kubectl apply -k deploy/kubernetes` after creating the secrets
+described in `secrets.example.yaml`. The namespace enforces the *restricted* Pod Security Standard;
+containers run as non-root with a read-only root filesystem and no capabilities; the central pod runs
+web and scheduler side by side on one volume (SQLite has one writer, so `replicas: 1` +
+`Recreate`); default-deny NetworkPolicies allow only users → central, collectors → central and
+collectors → SSH on their own site. Tests check the manifests against the code (probe paths, image
+tag, config copies, security context) without needing a cluster.
+
 ## Deploy on real servers
 
 - `deploy/ansible/` — playbook with roles for the central server, the site collectors, and the
   inspected hosts (creates a no-password, no-sudo `inspector` account and installs the site
   collector's key with `no-pty,no-port-forwarding`). Secrets come from Ansible Vault.
 - `deploy/systemd/` — hardened units (`ProtectSystem=strict`, `NoNewPrivileges`) for web,
-  scheduler and collector. Put the web service behind a TLS reverse proxy.
+  scheduler and collector, plus a daily backup timer. Put the web service behind a TLS reverse proxy.
 - On systemd hosts set `service_check: "systemctl is-active {name}"`; pin host keys with `known_hosts`.
+
+## API
+
+Every UI action is available over a documented REST API:
+[`/api/v1/openapi.json`](inspector/openapi.yaml), browsable at `/api/docs`. Scripts authenticate with
+**personal API tokens** created on the Account tab (`Authorization: Bearer dci_...`): a token is
+limited to a role no higher than its owner's, always expires, can be revoked, is stored only as a
+hash, and everything done with it is audited under the token's name.
+
+```bash
+curl -H "Authorization: Bearer $DCI_TOKEN" https://dc-inspector.example.com/api/v1/alerts?status=open
+```
+
+## Operating it
+
+- **Health probes**: `/health/live` (process answers) and `/health/ready` (database reachable,
+  schema current) — liveness deliberately ignores the database so a slow disk causes no restart loop.
+- **Logs**: `LOG_FORMAT=json` for log shippers. Each request gets an `X-Request-ID` (or keeps the
+  one from the load balancer), which appears in every log line and in error responses.
+
+- **Self-monitoring**: `GET /metrics` in Prometheus format — collector freshness and spool backlog,
+  open / unacknowledged critical alerts, notification backlog and age of the oldest undelivered
+  notification, hosts up/down, samples per hour, database size. Protected by `INSPECTOR_METRICS_TOKEN`
+  (bearer) or a logged-in session. *Who monitors the monitor* is answered by an external Prometheus.
+- **Schema migrations**: versioned in `PRAGMA user_version`; `init` (and every start) upgrades an
+  existing database in place, in a transaction, without losing data.
+- **Backups**: `python -m inspector.main backup DIR --keep 14` takes an online backup while the
+  server runs, verifies it with `integrity_check`, writes it atomically and prunes old copies
+  (systemd timer in `deploy/systemd/`). `verify-backup FILE` is the restore drill.
 
 ## Development
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m pytest                                   # 210 tests
+make install                                       # pip install -e ".[dev]"
+make check                                         # lint, format, types, tests + coverage gate (what CI runs)
+python -m pytest                                   # 307 tests
 python -m inspector.main init                      # schema + mock inventory
 python -m inspector.main create-user me --role admin
 python -m inspector.main server                    # http://127.0.0.1:8000
 ```
 
-CLI: `init | create-user | add-collector | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices`
+Engineering standards: Ruff (lint + format, including security rules), mypy, an 80% coverage gate
+(currently ~92% of lines), compatibility tests on Python 3.10–3.13, CodeQL, pip-audit, Dependabot and
+an image vulnerability scan on every pull request; tagged releases publish a container image to
+GHCR with an SBOM. See [CONTRIBUTING.md](CONTRIBUTING.md) (branching model, release process),
+[SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md).
+
+CLI: `init | create-user | add-collector | gen-token | server | scheduler | report | check-config | agent | collect-once | import-devices | export-devices | backup | verify-backup`
+
+## Performance
+
+`python scripts/benchmark.py --hosts 10000 --rounds 6` (2-vCPU cloud VM, SQLite WAL, ~17 metrics per host, 1% of hosts failing):
+
+| Measured | 2,000 hosts | 10,000 hosts |
+|---|---|---|
+| Ingest per 500-host batch (store + rules + rack correlation + notifications), p50 | 106 ms | 104 ms |
+| Full round, all hosts | 0.44 s | 2.1 s (7% of a 30 s interval) |
+| Throughput | ~4,500 host-samples/s | ~4,700 host-samples/s |
+| Latest status of all hosts (monitoring page API) | 39 ms | 172 ms |
+
+Ingest cost per host stays flat as the fleet grows. Beyond ~10k hosts per central server the next
+steps would be PostgreSQL / a time-series store for samples and paginating the host list.
 
 ## Design decisions and trade-offs
 
@@ -152,6 +236,10 @@ CLI: `init | create-user | add-collector | server | scheduler | report | check-c
   the SQL and data model are portable.
 - **One SSH session per host per round**, parallel per site, bounded by timeouts: a dead host never
   delays the others. Two SSH backends: system `ssh` (keys, reuses ssh config) or paramiko.
+- **SSH connection reuse** (OpenSSH `ControlMaster`): measured on real sshd, per-host SSH overhead
+  dropped from 149 ms to 29 ms after the first round. Unix socket paths are limited to 104 bytes, and a
+  too-long control path makes ssh fail outright — so the path is validated and reuse falls back to a
+  normal connection rather than breaking inspection.
 - **Safety**: service names and mount paths are validated and shell-quoted; custom check commands
   can only be defined in the server config file (by admins), never via the UI or API; ingest
   validates every field and rejects timestamps from the future (clock skew).
@@ -168,10 +256,13 @@ inspector/
   scheduler.py  delivery, watchdog, reminders, daily report     report.py    HTML report, retention
   lookup.py     CMDB search and cabling                         seed.py      mock inventory
   metrics.py    host snapshots, metric history                  inventory.py rack elevation, CSV import/export
+  ops.py        Prometheus self-metrics, verified backups      logs.py      JSON logs, request IDs
+  openapi.yaml  API contract (served at /api/v1/openapi.json)
 config/         server.yaml, rules.yaml, collectors/*.yaml
 docker/         host image (sshd, nginx, stress-ng), central bootstrap
-deploy/         ansible/, systemd/
-tests/          210 pytest tests
+deploy/         kubernetes/, ansible/, systemd/
+scripts/        benchmark.py (load test)
+tests/          307 pytest tests
 ```
 
 Python 3.10+ · Flask · SQLite · OpenSSH / paramiko · Jinja2 · pytest · Docker Compose · Ansible · systemd

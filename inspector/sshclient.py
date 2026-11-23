@@ -5,7 +5,35 @@ Two interchangeable backends (choose with collector.ssh_client in config.yaml):
 - OpenSSHRunner    the system `ssh` command, key-based only; reuses the machine's
                    ~/.ssh/config, agent and known_hosts, no extra Python dependency
 """
+
+import logging
+import os
 import subprocess
+import threading
+
+log = logging.getLogger(__name__)
+# Unix socket paths are limited (108 bytes on Linux, 104 on macOS). ssh names the control
+# socket <dir>/<40-char %C hash> and adds a 17-char temporary suffix while creating it.
+SOCKET_PATH_LIMIT = 104
+CONTROL_NAME_LEN = 1 + 40 + 17
+_warned_dirs: set[str] = set()
+
+
+def control_dir_usable(control_dir: str | None) -> bool:
+    """A too-long ControlPath makes ssh fail outright, so reuse is skipped rather than break inspection."""
+    if not control_dir:
+        return False
+    if len(control_dir.encode()) + CONTROL_NAME_LEN <= SOCKET_PATH_LIMIT:
+        return True
+    if control_dir not in _warned_dirs:
+        _warned_dirs.add(control_dir)
+        log.warning(
+            "SSH connection reuse disabled: control_dir %r is too long for a Unix socket path "
+            "(max %d characters); use a short path such as /run/inspector/ssh",
+            control_dir,
+            SOCKET_PATH_LIMIT - CONTROL_NAME_LEN,
+        )
+    return False
 
 
 class SSHError(RuntimeError):
@@ -13,33 +41,63 @@ class SSHError(RuntimeError):
 
 
 class OpenSSHRunner:
-    def __init__(self, address: str, port: int = 22, username: str = "inspector",
-                 key_file: str | None = None, timeout: int = 10, known_hosts: str | None = None):
+    def __init__(
+        self,
+        address: str,
+        port: int = 22,
+        username: str = "inspector",
+        key_file: str | None = None,
+        timeout: int = 10,
+        known_hosts: str | None = None,
+        control_dir: str | None = None,
+        control_persist: int = 120,
+        strict_host_keys: bool = False,
+    ):
         self.address = address
         self.port = port
         self.username = username
         self.key_file = key_file
         self.timeout = timeout
         self.known_hosts = known_hosts
+        self.control_dir = control_dir  # reuse one SSH connection per host across rounds
+        self.control_persist = control_persist
+        self.strict_host_keys = strict_host_keys
 
     def build_args(self, command: str) -> list[str]:
-        args = ["ssh", "-p", str(self.port),
-                "-o", "BatchMode=yes",                    # never prompt for a password
-                "-o", f"ConnectTimeout={self.timeout}",
-                "-o", "LogLevel=ERROR"]
+        args = [
+            "ssh",
+            "-p",
+            str(self.port),
+            "-o",
+            "BatchMode=yes",  # never prompt for a password
+            "-o",
+            f"ConnectTimeout={self.timeout}",
+            "-o",
+            "LogLevel=ERROR",
+        ]
+        # strict: only keys already in known_hosts. Otherwise trust on first use (accept-new):
+        # a new host's key is recorded, and a CHANGED key is refused -> host_key_changed alert.
         if self.known_hosts:
-            args += ["-o", f"UserKnownHostsFile={self.known_hosts}", "-o", "StrictHostKeyChecking=yes"]
-        else:
-            # Lab mode: accept unknown host keys. Production should pass known_hosts.
-            args += ["-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no"]
+            args += ["-o", f"UserKnownHostsFile={self.known_hosts}"]
+        args += ["-o", f"StrictHostKeyChecking={'yes' if self.strict_host_keys else 'accept-new'}"]
         if self.key_file:
             args += ["-i", self.key_file, "-o", "IdentitiesOnly=yes"]
-        return args + [f"{self.username}@{self.address}", command]
+        if control_dir_usable(self.control_dir):
+            # ControlMaster: the first round opens a master connection, later rounds reuse it
+            # (no TCP + key exchange + auth every 30 s). %C = hash of host/port/user.
+            args += [
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                f"ControlPath={self.control_dir}/%C",
+                "-o",
+                f"ControlPersist={self.control_persist}",
+            ]
+        return [*args, f"{self.username}@{self.address}", command]
 
     def run(self, command: str) -> str:
         try:
-            result = subprocess.run(self.build_args(command), capture_output=True, text=True,
-                                    timeout=self.timeout + 10)
+            result = subprocess.run(self.build_args(command), capture_output=True, text=True, timeout=self.timeout + 10)
         except (subprocess.TimeoutExpired, OSError) as exc:
             raise SSHError(f"{type(exc).__name__}: {exc}") from exc
         # 255 = ssh itself failed. Other codes come from the remote command (e.g. a stopped service).
@@ -48,10 +106,48 @@ class OpenSSHRunner:
         return result.stdout
 
 
+_known_hosts_lock = threading.Lock()
+
+
+def trust_on_first_use_policy(path: str):
+    """Paramiko policy: record an unknown host's key in `path` (like OpenSSH accept-new).
+
+    Keys already in the file are verified by paramiko itself, so a changed key is refused.
+    """
+    import paramiko
+
+    class TrustOnFirstUse(paramiko.MissingHostKeyPolicy):
+        def missing_host_key(self, client, hostname, key):
+            with _known_hosts_lock:  # collectors connect to many hosts in parallel
+                keys = paramiko.HostKeys()
+                if os.path.exists(path):
+                    keys.load(path)
+                keys.add(hostname, key.get_name(), key)
+                keys.save(path)
+            client.get_host_keys().add(hostname, key.get_name(), key)
+            log.warning(
+                "Recorded new SSH host key for %s (%s %s) in %s",
+                hostname,
+                key.get_name(),
+                key.get_fingerprint().hex(),
+                path,
+            )
+
+    return TrustOnFirstUse()
+
+
 class SSHRunner:
-    def __init__(self, address: str, port: int = 22, username: str = "inspector",
-                 password: str | None = None, key_file: str | None = None,
-                 timeout: int = 10, known_hosts: str | None = None):
+    def __init__(
+        self,
+        address: str,
+        port: int = 22,
+        username: str = "inspector",
+        password: str | None = None,
+        key_file: str | None = None,
+        timeout: int = 10,
+        known_hosts: str | None = None,
+        strict_host_keys: bool = False,
+    ):
         self.address = address
         self.port = port
         self.username = username
@@ -59,22 +155,31 @@ class SSHRunner:
         self.key_file = key_file
         self.timeout = timeout
         self.known_hosts = known_hosts
+        self.strict_host_keys = strict_host_keys
 
     def run(self, command: str) -> str:
         import paramiko  # imported here so tests and the web app don't need it
 
         client = paramiko.SSHClient()
-        if self.known_hosts:
-            client.load_host_keys(self.known_hosts)
+        if self.known_hosts and os.path.exists(self.known_hosts):
+            client.load_host_keys(self.known_hosts)  # a changed key now raises BadHostKeyException
+        if self.strict_host_keys or not self.known_hosts:
             client.set_missing_host_key_policy(paramiko.RejectPolicy())
         else:
-            # Lab mode: accept unknown host keys. Production should pass known_hosts.
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.set_missing_host_key_policy(trust_on_first_use_policy(self.known_hosts))
         try:
-            client.connect(self.address, port=self.port, username=self.username,
-                           password=self.password, key_filename=self.key_file,
-                           timeout=self.timeout, banner_timeout=self.timeout,
-                           auth_timeout=self.timeout, look_for_keys=False, allow_agent=False)
+            client.connect(
+                self.address,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                key_filename=self.key_file,
+                timeout=self.timeout,
+                banner_timeout=self.timeout,
+                auth_timeout=self.timeout,
+                look_for_keys=False,
+                allow_agent=False,
+            )
             _, stdout, _ = client.exec_command(command, timeout=self.timeout + 5)
             return stdout.read().decode("utf-8", errors="replace")
         except Exception as exc:  # paramiko raises many types; callers only need the message

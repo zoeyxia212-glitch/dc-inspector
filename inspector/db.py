@@ -4,6 +4,7 @@ SQLite keeps the project dependency-free and easy to run. All SQL is plain and
 portable; at larger scale the central database would move to PostgreSQL
 (samples to a time-series store) without changing the data model.
 """
+
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -12,7 +13,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = Path(os.environ.get("INSPECTOR_DB", PROJECT_ROOT / "data" / "inventory.db"))
-TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"   # always UTC, sorts correctly as text
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # always UTC, sorts correctly as text
 
 SCHEMA = """
 -- ================= Inventory (CMDB) =================
@@ -182,8 +183,9 @@ def connect(db_path=DEFAULT_DB_PATH) -> sqlite3.Connection:
     in_memory = str(db_path) == ":memory:"
     if not in_memory:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30,
-                           isolation_level=None)   # autocommit; explicit transactions via `transaction()`
+    conn = sqlite3.connect(
+        db_path, check_same_thread=False, timeout=30, isolation_level=None
+    )  # autocommit; explicit transactions via `transaction()`
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     if not in_memory:
@@ -206,8 +208,73 @@ def transaction(conn: sqlite3.Connection):
     conn.execute("COMMIT")
 
 
-def init_schema(conn: sqlite3.Connection) -> None:
+# Schema migrations, applied in order and recorded in PRAGMA user_version.
+# Never edit a released migration: add a new one. SCHEMA above is version 1.
+MIGRATIONS: list[tuple[int, str]] = [
+    (
+        2,
+        """
+        -- Rack-level correlation: child host_down alerts point at the rack_outage alert.
+        ALTER TABLE alerts ADD COLUMN parent_id INTEGER REFERENCES alerts(id);
+        CREATE INDEX IF NOT EXISTS idx_alerts_parent ON alerts(parent_id);
+    """,
+    ),
+    (
+        3,
+        """
+        -- Personal API tokens for scripts and automation (the token itself is never stored).
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id           INTEGER PRIMARY KEY,
+            user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name         TEXT NOT NULL,
+            prefix       TEXT NOT NULL,
+            token_hash   TEXT NOT NULL UNIQUE,
+            role         TEXT NOT NULL CHECK (role IN ('viewer', 'operator', 'admin')),
+            created_at   TEXT NOT NULL,
+            expires_at   TEXT NOT NULL,
+            last_used_at TEXT,
+            revoked_at   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+    """,
+    ),
+]
+SCHEMA_VERSION = max([1] + [v for v, _ in MIGRATIONS])
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def inserted_id(cursor: sqlite3.Cursor) -> int:
+    """lastrowid is Optional in the DB-API; after an INSERT it must exist."""
+    if cursor.lastrowid is None:
+        raise RuntimeError("INSERT did not produce a row id")
+    return cursor.lastrowid
+
+
+def init_schema(conn: sqlite3.Connection) -> list[int]:
+    """Create missing tables, then apply pending migrations. Returns the versions applied."""
     conn.executescript(SCHEMA)
+    current = schema_version(conn) or 1  # databases from before migrations existed are version 1
+    applied = []
+    for version, sql in MIGRATIONS:
+        if version <= current:
+            continue
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in (x.strip() for x in sql.split(";")):
+                if statement and not all(line.strip().startswith("--") for line in statement.splitlines()):
+                    conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {int(version)}")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+        applied.append(version)
+    if current == 1 and not applied and schema_version(conn) == 0:
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    return applied
 
 
 def utcnow() -> datetime:

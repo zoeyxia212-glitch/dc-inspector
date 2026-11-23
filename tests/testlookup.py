@@ -3,14 +3,17 @@ import pytest
 from inspector import lookup
 
 
-@pytest.mark.parametrize("query, expected", [
-    ("AST-000123", "asset_id"),
-    ("ast-5", "asset_id"),
-    ("SH01-A03", "rack"),
-    ("sh10", "rack"),
-    ("10.3.2.12", "ip"),
-    ("10.3.", "ip"),
-])
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("AST-000123", "asset_id"),
+        ("ast-5", "asset_id"),
+        ("SH01-A03", "rack"),
+        ("sh10", "rack"),
+        ("10.3.2.12", "ip"),
+        ("10.3.", "ip"),
+    ],
+)
 def test_detect_query_type(query, expected):
     assert lookup.detect_query_type(query) == expected
 
@@ -55,7 +58,7 @@ def test_asset_id_without_leading_zeros(conn):
 
 
 def test_server_detail_shows_switch_peer(conn):
-    detail = lookup.get_device_detail(conn, "AST-000002")   # first server in SH01-A01
+    detail = lookup.get_device_detail(conn, "AST-000002")  # first server in SH01-A01
     assert detail["device_type"] == "server"
     eth0 = next(p for p in detail["ports"] if p["name"] == "eth0")
     assert eth0["peer_hostname"] == "sh01-a01-tor"
@@ -63,7 +66,7 @@ def test_server_detail_shows_switch_peer(conn):
 
 
 def test_switch_detail_shows_server_peers(conn):
-    detail = lookup.get_device_detail(conn, "AST-000001")   # ToR switch in SH01-A01
+    detail = lookup.get_device_detail(conn, "AST-000001")  # ToR switch in SH01-A01
     assert len(detail["ports"]) == 48
     cabled = [p for p in detail["ports"] if p["peer_hostname"]]
     assert len(cabled) == 16

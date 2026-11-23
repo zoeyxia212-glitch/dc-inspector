@@ -11,8 +11,10 @@ on any Linux, including minimal images without systemd:
     ##SVC <name>        process / systemd check   -> service.<name>.up
     ##CHK <name>        custom check from central -> check.<name>
 """
+
 import re
 import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 DEFAULT_SERVICE_CHECK = "pgrep -x {name} >/dev/null && echo active || echo inactive"
@@ -32,10 +34,11 @@ class CheckDef:
 
     Commands are written by admins in the server config, never through the UI or API.
     """
+
     name: str
     command: str
-    type: str = "number"          # number | text
-    pattern: str | None = None    # regex; group 1 (or whole match) is the value
+    type: str = "number"  # number | text
+    pattern: str | None = None  # regex; group 1 (or whole match) is the value
     timeout: int = 5
 
     def __post_init__(self):
@@ -49,12 +52,18 @@ class CheckDef:
             raise ValueError(f"Check {self.name}: timeout must be 1-30 s")
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "command": self.command, "type": self.type,
-                "pattern": self.pattern, "timeout": self.timeout}
+        return {
+            "name": self.name,
+            "command": self.command,
+            "type": self.type,
+            "pattern": self.pattern,
+            "timeout": self.timeout,
+        }
 
 
-def build_command(mounts: list[str], services: list[str], checks: list[CheckDef] = (),
-                  service_check: str = DEFAULT_SERVICE_CHECK) -> str:
+def build_command(
+    mounts: list[str], services: list[str], checks: Sequence[CheckDef] = (), service_check: str = DEFAULT_SERVICE_CHECK
+) -> str:
     for mount in mounts:
         if not SAFE_MOUNT.match(mount):
             raise ValueError(f"Unsafe mount path: {mount!r}")
@@ -65,19 +74,29 @@ def build_command(mounts: list[str], services: list[str], checks: list[CheckDef]
     quoted_mounts = " ".join(shlex.quote(m) for m in mounts)
     parts = [
         "export LC_ALL=C",
-        "echo '##STAT1'", "head -n1 /proc/stat", "sleep 1",
-        "echo '##STAT2'", "head -n1 /proc/stat",
-        "echo '##NPROC'", "nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo",
-        "echo '##LOAD'", "cat /proc/loadavg",
-        "echo '##MEM'", "cat /proc/meminfo",
-        "echo '##DISK'", f"df -P {quoted_mounts} 2>/dev/null",
-        "echo '##INODE'", f"df -Pi {quoted_mounts} 2>/dev/null",
+        "echo '##STAT1'",
+        "head -n1 /proc/stat",
+        "sleep 1",
+        "echo '##STAT2'",
+        "head -n1 /proc/stat",
+        "echo '##NPROC'",
+        "nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo",
+        "echo '##LOAD'",
+        "cat /proc/loadavg",
+        "echo '##MEM'",
+        "cat /proc/meminfo",
+        "echo '##DISK'",
+        f"df -P {quoted_mounts} 2>/dev/null",
+        "echo '##INODE'",
+        f"df -Pi {quoted_mounts} 2>/dev/null",
     ]
     for service in services:
         parts += [f"echo '##SVC {service}'", service_check.format(name=shlex.quote(service))]
     for check in checks:
-        parts += [f"echo '##CHK {check.name}'",
-                  f"timeout {int(check.timeout)} sh -c {shlex.quote(check.command)} 2>/dev/null"]
+        parts += [
+            f"echo '##CHK {check.name}'",
+            f"timeout {int(check.timeout)} sh -c {shlex.quote(check.command)} 2>/dev/null",
+        ]
     return "; ".join(parts)
 
 
@@ -98,9 +117,10 @@ def parse_cpu(stat1: str, stat2: str) -> float:
         fields = line.split()
         if not fields or fields[0] != "cpu":
             raise ParseError(f"Not a /proc/stat cpu line: {line!r}")
-        values = [int(v) for v in fields[1:9]]        # user nice system idle iowait irq softirq steal
+        values = [int(v) for v in fields[1:9]]  # user nice system idle iowait irq softirq steal
         values += [0] * (8 - len(values))
         return values[3] + values[4], sum(values)
+
     idle1, total1 = totals(stat1)
     idle2, total2 = totals(stat2)
     if total2 - total1 <= 0:
@@ -116,8 +136,7 @@ def parse_meminfo(lines: list[str]) -> dict[str, float]:
             info[key] = int(rest.split()[0])
     if not info.get("MemTotal"):
         raise ParseError("MemTotal missing from /proc/meminfo")
-    available = info.get("MemAvailable",
-                         info.get("MemFree", 0) + info.get("Buffers", 0) + info.get("Cached", 0))
+    available = info.get("MemAvailable", info.get("MemFree", 0) + info.get("Buffers", 0) + info.get("Cached", 0))
     result = {"mem.percent": round(100.0 * (1 - available / info["MemTotal"]), 1)}
     if info.get("SwapTotal"):
         result["swap.percent"] = round(100.0 * (1 - info.get("SwapFree", 0) / info["SwapTotal"]), 1)
@@ -130,7 +149,7 @@ def parse_df(lines: list[str], mounts: list[str]) -> dict[str, float]:
     for line in lines:
         fields = line.split()
         if len(fields) < 6 or not fields[4].endswith("%"):
-            continue                       # header, or '-' for filesystems without inodes
+            continue  # header, or '-' for filesystems without inodes
         if fields[5] in mounts:
             usage[fields[5]] = float(fields[4].rstrip("%"))
     return usage
@@ -149,8 +168,7 @@ def parse_check(lines: list[str], check: CheckDef):
     return float(m.group(0)) if m else None
 
 
-def parse_output(output: str, mounts: list[str], services: list[str],
-                 checks: list[CheckDef] = ()) -> dict:
+def parse_output(output: str, mounts: list[str], services: list[str], checks: Sequence[CheckDef] = ()) -> dict:
     """Flat {metric key: number or text}."""
     s = split_sections(output)
     try:

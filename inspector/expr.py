@@ -13,10 +13,15 @@ same target, so `disk.*.percent` produces one alert per mount.
 Evaluation returns True / False, or None when a metric is missing ("no data"),
 which the alert engine treats differently from False.
 """
+
+from __future__ import annotations
+
 import re
 from dataclasses import dataclass
+from typing import Any
 
-TOKEN_RE = re.compile(r"""
+TOKEN_RE = re.compile(
+    r"""
     \s*(?:
       (?P<num>-?\d+(?:\.\d+)?)
     | (?P<str>"[^"]*"|'[^']*')
@@ -24,12 +29,17 @@ TOKEN_RE = re.compile(r"""
     | (?P<lparen>\()
     | (?P<rparen>\))
     | (?P<name>[A-Za-z_][A-Za-z0-9_./*:@-]*)
-    )""", re.VERBOSE)
+    )""",
+    re.VERBOSE,
+)
 KEYWORDS = {"and", "or", "not"}
 COMPARE = {
-    "==": lambda a, b: a == b, "!=": lambda a, b: a != b,
-    ">": lambda a, b: a > b, ">=": lambda a, b: a >= b,
-    "<": lambda a, b: a < b, "<=": lambda a, b: a <= b,
+    "==": lambda a, b: a == b,
+    "!=": lambda a, b: a != b,
+    ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
 }
 
 
@@ -43,10 +53,22 @@ class NoData(Exception):
 
 @dataclass(frozen=True)
 class Node:
-    kind: str            # num | str | key | cmp | and | or | not
-    value: object = None
-    left: "Node | None" = None
-    right: "Node | None" = None
+    kind: str  # num | str | key | cmp | and | or | not
+    value: Any = None
+    left: Node | None = None
+    right: Node | None = None
+
+    @property
+    def lhs(self) -> Node:
+        if self.left is None:
+            raise ExprError(f"{self.kind} node without operand")
+        return self.left
+
+    @property
+    def rhs(self) -> Node:
+        if self.right is None:
+            raise ExprError(f"{self.kind} node without right operand")
+        return self.right
 
 
 def tokenize(text: str) -> list[tuple[str, str]]:
@@ -55,8 +77,8 @@ def tokenize(text: str) -> list[tuple[str, str]]:
     while pos < len(text):
         m = TOKEN_RE.match(text, pos)
         if not m or m.end() == pos:
-            raise ExprError(f"Unexpected character at {pos}: {text[pos:pos + 10]!r}")
-        kind = m.lastgroup
+            raise ExprError(f"Unexpected character at {pos}: {text[pos : pos + 10]!r}")
+        kind = m.lastgroup or ""
         value = m.group(kind)
         if kind == "name" and value in KEYWORDS:
             kind = value
@@ -149,12 +171,41 @@ def keys(node: Node) -> list[str]:
             found.append(n.value)
         walk(n.left)
         walk(n.right)
+
     walk(node)
     return found
 
 
 def evaluate(node: Node, values: dict, target: str = "") -> bool | None:
-    """True/False, or None if a needed metric is missing."""
+    """True/False, or None if a needed metric is missing.
+
+    Three-valued (Kleene) logic, like SQL NULL: `False and <no data>` is False and
+    `True or <no data>` is True, because the missing part cannot change the result.
+    Otherwise a missing metric gives None, which never resolves an alert by accident.
+    """
+    return _tri(node, values, target)
+
+
+def _tri(node: Node, values: dict, target: str) -> bool | None:
+    if node.kind == "and":
+        left = _tri(node.lhs, values, target)
+        if left is False:
+            return False
+        right = _tri(node.rhs, values, target)
+        if right is False:
+            return False
+        return None if left is None or right is None else True
+    if node.kind == "or":
+        left = _tri(node.lhs, values, target)
+        if left is True:
+            return True
+        right = _tri(node.rhs, values, target)
+        if right is True:
+            return True
+        return None if left is None or right is None else False
+    if node.kind == "not":
+        inner = _tri(node.lhs, values, target)
+        return None if inner is None else not inner
     try:
         return bool(_eval(node, values, target))
     except NoData:
@@ -166,28 +217,28 @@ def _eval(node: Node, values: dict, target: str):
     if kind in ("num", "str"):
         return node.value
     if kind == "key":
-        key = node.value.replace("*", target)
+        key = str(node.value).replace("*", target)
         if key not in values or values[key] is None:
             raise NoData(key)
         return values[key]
     if kind == "not":
-        return not _eval(node.left, values, target)
+        return not _eval(node.lhs, values, target)
     if kind == "and":
         # no data on either side => no data, so a missing metric never resolves an alert by accident
-        left = _eval(node.left, values, target)
-        right = _eval(node.right, values, target)
+        left = _eval(node.lhs, values, target)
+        right = _eval(node.rhs, values, target)
         return bool(left) and bool(right)
     if kind == "or":
-        left = _eval(node.left, values, target)
-        right = _eval(node.right, values, target)
+        left = _eval(node.lhs, values, target)
+        right = _eval(node.rhs, values, target)
         return bool(left) or bool(right)
     if kind == "cmp":
-        a, b = _eval(node.left, values, target), _eval(node.right, values, target)
+        a, b = _eval(node.lhs, values, target), _eval(node.rhs, values, target)
         if isinstance(a, str) != isinstance(b, str):
             if node.value in ("==", "!="):
-                return COMPARE[node.value](str(a), str(b))
+                return COMPARE[str(node.value)](str(a), str(b))
             raise NoData(f"cannot order {a!r} and {b!r}")
-        return COMPARE[node.value](a, b)
+        return COMPARE[str(node.value)](a, b)
     raise ExprError(f"Unknown node {kind}")
 
 

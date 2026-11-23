@@ -1,11 +1,10 @@
 from datetime import timedelta
 
-from inspector import scheduler
+from conftest import T0, at, outbox
+
+from inspector import alerts, scheduler
 from inspector.db import transaction
 from inspector.report import build_report_data, prune, render_report, write_report
-from inspector import alerts
-
-from conftest import T0, at, outbox
 
 UNTIL = T0 + timedelta(hours=1)
 
@@ -18,8 +17,9 @@ def history(push):
 
 def test_report_numbers(conn, push):
     history(push)
-    data = build_report_data(conn, T0, UNTIL, expected_hosts={
-        "sh01-a01-srv01": "SH01", "sh02-a01-srv01": "SH02", "sh03-a01-srv01": "SH03"})
+    data = build_report_data(
+        conn, T0, UNTIL, expected_hosts={"sh01-a01-srv01": "SH01", "sh02-a01-srv01": "SH02", "sh03-a01-srv01": "SH03"}
+    )
     hosts = {h["host"]: h for h in data["hosts"]}
     assert hosts["sh01-a01-srv01"]["status"] == "OK"
     assert hosts["sh01-a01-srv01"]["checks"] == 4 and hosts["sh01-a01-srv01"]["max_cpu"] == 23.0
@@ -35,20 +35,24 @@ def test_report_shows_who_handled_alert(conn, push):
     alerts.acknowledge(conn, alert_id, "otto", "INC-9 power cycled", at(4))
     html = render_report(build_report_data(conn, T0, UNTIL, tz="Pacific/Auckland"))
     assert "otto: INC-9 power cycled" in html and "host_down" in html
-    assert "2026-11-18 13:00" in html                                # NZ local time
+    assert "2026-11-18 13:00" in html  # NZ local time
 
 
 def test_daily_job_writes_report_notifies_and_prunes(conn, settings, push, tmp_path):
     import dataclasses
+
     from inspector.config import Channel
-    s = dataclasses.replace(settings, channels=[Channel(name="mail", type="email", daily_report=True)], retention_days=1)
+
+    s = dataclasses.replace(
+        settings, channels=[Channel(name="mail", type="email", daily_report=True)], retention_days=1
+    )
     push(0)
     push(10)
     path = scheduler.run_daily(conn, s, tmp_path, now=at(10) + timedelta(days=1, seconds=-60))
     assert path.endswith("inspection report 20261119.html") or path.endswith(".html")
     msgs = outbox(conn)
     assert [m["event"] for m in msgs] == ["report"] and "Availability" in msgs[0]["body"]
-    assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 1      # step 0 pruned
+    assert conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0] == 1  # step 0 pruned
 
 
 def test_write_report_file(conn, push, tmp_path):

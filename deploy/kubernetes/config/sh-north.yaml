@@ -1,0 +1,19 @@
+# Collector for site sh-north, running in Kubernetes.
+name: sh-north
+central_url: http://central:8000
+token_env: INSPECTOR_COLLECTOR_TOKEN
+spool_path: /var/lib/inspector/spool.db
+ssh:
+  client: openssh
+  timeout: 10
+  control_dir: /run/inspector/ssh
+  # known_hosts: /etc/dc-inspector/known_hosts   # mount pinned host keys in production
+defaults:
+  username: inspector
+  key_file: /keys/id_ed25519
+  mounts: ["/", "/data"]
+  services: ["nginx", "crond"]
+hosts:
+  - {name: sh01-a01-srv01, address: 10.1.1.11, datacenter: SH01}
+  - {name: sh02-a01-srv01, address: 10.2.1.11, datacenter: SH02}
+  - {name: sh03-a01-srv01, address: 10.3.1.11, datacenter: SH03}

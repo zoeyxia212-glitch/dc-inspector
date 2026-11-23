@@ -4,6 +4,7 @@ Secrets never live in these files: they reference environment variables
 (`*_env` keys), which come from the deployment (systemd EnvironmentFile,
 Docker secrets/.env, Ansible Vault).
 """
+
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,9 +27,9 @@ class ConfigError(ValueError):
 @dataclass
 class Channel:
     name: str
-    type: str                                  # email | wecom | dingtalk | slack
+    type: str  # email | wecom | dingtalk | slack
     min_severity: str = "warning"
-    datacenters: list[str] = field(default_factory=list)   # empty = all
+    datacenters: list[str] = field(default_factory=list)  # empty = all
     daily_report: bool = False
     settings: dict = field(default_factory=dict)
 
@@ -56,6 +57,7 @@ class ServerSettings:
     service_check: str = DEFAULT_SERVICE_CHECK
     collector_stale_seconds: int = 120
     watchdog_seconds: int = 30
+    rack_outage_min_hosts: int = 3
     renotify_after_minutes: int = 30
     report_hour: int = 8
     timezone: str = "Pacific/Auckland"
@@ -65,8 +67,11 @@ class ServerSettings:
 
     def collector_config(self) -> dict:
         """What collectors pull from GET /api/v1/collector/config."""
-        return {"interval_seconds": self.interval_seconds, "service_check": self.service_check,
-                "checks": [c.to_dict() for c in self.checks]}
+        return {
+            "interval_seconds": self.interval_seconds,
+            "service_check": self.service_check,
+            "checks": [c.to_dict() for c in self.checks],
+        }
 
 
 def load_server_config(path=DEFAULT_SERVER_CONFIG) -> ServerSettings:
@@ -90,11 +95,14 @@ def load_server_config(path=DEFAULT_SERVER_CONFIG) -> ServerSettings:
     _unique([c.name for c in channels], "channel")
 
     return ServerSettings(
-        rules=rules, checks=checks, channels=channels,
+        rules=rules,
+        checks=checks,
+        channels=channels,
         interval_seconds=int(collection.get("interval_seconds", 30)),
         service_check=collection.get("service_check", DEFAULT_SERVICE_CHECK),
         collector_stale_seconds=int(alerting.get("collector_stale_seconds", 120)),
         watchdog_seconds=int(alerting.get("watchdog_seconds", 30)),
+        rack_outage_min_hosts=int(alerting.get("rack_outage_min_hosts", 3)),
         renotify_after_minutes=int(alerting.get("renotify_after_minutes", 30)),
         report_hour=int(report.get("hour", 8)),
         timezone=report.get("timezone", "Pacific/Auckland"),
@@ -131,13 +139,15 @@ class CollectorSettings:
     name: str
     central_url: str
     hosts: list[HostConfig]
-    token_env: str = "INSPECTOR_COLLECTOR_TOKEN"
-    ssh_client: str = "openssh"                # openssh (system ssh, keys) | paramiko
+    token_env: str = "INSPECTOR_COLLECTOR_TOKEN"  # noqa: S105 - name of an env var, not a secret
+    ssh_client: str = "openssh"  # openssh (system ssh, keys) | paramiko
     ssh_timeout: int = 10
-    known_hosts: str | None = None
+    known_hosts: str | None = None  # default: known_hosts next to the spool
+    host_key_policy: str = "tofu"  # tofu (trust on first use) | strict (pre-loaded keys only)
+    ssh_control_dir: str | None = None  # enables SSH connection reuse (openssh client)
     max_workers: int = 20
     spool_path: str = "spool.db"
-    spool_max_batches: int = 20000             # ~1 week at 30 s; oldest dropped beyond this
+    spool_max_batches: int = 20000  # ~1 week at 30 s; oldest dropped beyond this
     config_refresh_seconds: int = 300
 
     @property
@@ -154,16 +164,32 @@ def load_collector_config(path) -> CollectorSettings:
     except TypeError as exc:
         raise ConfigError(f"Bad host entry: {exc}") from exc
     _unique([h.name for h in hosts], "host")
+    control_dir = ssh.get("control_dir")
+    if control_dir and len(str(control_dir)) > 46:
+        raise ConfigError(
+            f"ssh.control_dir is too long ({len(str(control_dir))} chars, max 46): Unix socket "
+            "paths are limited to 104 bytes; use a short path such as /run/inspector/ssh"
+        )
+    if ssh.get("host_key_policy", "tofu") not in ("tofu", "strict"):
+        raise ConfigError("ssh.host_key_policy must be tofu or strict")
+    spool = raw.get("spool_path", "spool.db")
     if ssh.get("client", "openssh") not in ("openssh", "paramiko"):
         raise ConfigError("ssh.client must be openssh or paramiko")
     for key in ("name", "central_url"):
         if not raw.get(key):
             raise ConfigError(f"collector config needs '{key}'")
     return CollectorSettings(
-        name=raw["name"], central_url=raw["central_url"].rstrip("/"), hosts=hosts,
+        name=raw["name"],
+        central_url=raw["central_url"].rstrip("/"),
+        hosts=hosts,
         token_env=raw.get("token_env", "INSPECTOR_COLLECTOR_TOKEN"),
-        ssh_client=ssh.get("client", "openssh"), ssh_timeout=int(ssh.get("timeout", 10)),
-        known_hosts=ssh.get("known_hosts"), max_workers=int(raw.get("max_workers", 20)),
+        ssh_client=ssh.get("client", "openssh"),
+        ssh_timeout=int(ssh.get("timeout", 10)),
+        known_hosts=ssh.get("known_hosts") or os.path.join(os.path.dirname(spool) or ".", "known_hosts"),
+        # an explicitly provided known_hosts file used to mean "strict": keep that meaning
+        host_key_policy=ssh.get("host_key_policy", "strict" if ssh.get("known_hosts") else "tofu"),
+        ssh_control_dir=ssh.get("control_dir"),
+        max_workers=int(raw.get("max_workers", 20)),
         spool_path=raw.get("spool_path", "spool.db"),
         spool_max_batches=int(raw.get("spool_max_batches", 20000)),
         config_refresh_seconds=int(raw.get("config_refresh_seconds", 300)),

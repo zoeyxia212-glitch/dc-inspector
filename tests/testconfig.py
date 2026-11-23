@@ -44,11 +44,25 @@ def test_errors(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
         load_collector_config(tmp_path / "missing.yaml")
     bad = tmp_path / "c.yaml"
-    bad.write_text("name: x\ncentral_url: http://c\nhosts:\n  - {name: a, address: a, datacenter: SH01}\n"
-                   "  - {name: a, address: b, datacenter: SH01}\n")
+    bad.write_text(
+        "name: x\ncentral_url: http://c\nhosts:\n  - {name: a, address: a, datacenter: SH01}\n"
+        "  - {name: a, address: b, datacenter: SH01}\n"
+    )
     with pytest.raises(ConfigError, match="Duplicate"):
         load_collector_config(bad)
     (tmp_path / "server.yaml").write_text("notifications:\n  channels:\n    - {name: x, type: pager}\n")
     (tmp_path / "rules.yaml").write_text("rules: []\n")
     with pytest.raises(ConfigError, match="type must be"):
         load_server_config(tmp_path / "server.yaml")
+
+
+def test_host_key_policy_defaults(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text("name: c\ncentral_url: http://x\nspool_path: /var/lib/inspector/spool.db\nhosts: []\n")
+    c = load_collector_config(p)
+    assert c.host_key_policy == "tofu" and c.known_hosts == "/var/lib/inspector/known_hosts"
+    p.write_text("name: c\ncentral_url: http://x\nssh: {known_hosts: /etc/kh}\nhosts: []\n")
+    assert load_collector_config(p).host_key_policy == "strict"  # explicit file keeps its old meaning
+    p.write_text("name: c\ncentral_url: http://x\nssh: {host_key_policy: yolo}\nhosts: []\n")
+    with pytest.raises(ConfigError, match="host_key_policy"):
+        load_collector_config(p)

@@ -1,0 +1,13 @@
+[Unit]
+Description=DC Inspector database backup (online, verified)
+
+[Service]
+Type=oneshot
+User=inspector
+Group=inspector
+WorkingDirectory=/opt/dc-inspector
+EnvironmentFile=/etc/dc-inspector/central.env
+ExecStart=/opt/dc-inspector/venv/bin/python -m inspector.main backup /var/backups/dc-inspector --keep 14
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dc-inspector /var/backups/dc-inspector

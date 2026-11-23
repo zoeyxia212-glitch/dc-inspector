@@ -7,6 +7,7 @@ spool_path: /var/lib/inspector/spool.db
 ssh:
   client: openssh          # system ssh + key; paramiko also supported (password or key)
   timeout: 10
+  control_dir: /var/lib/inspector/ssh   # reuse SSH connections (keep the path short: socket limit)
   # known_hosts: /etc/inspector/known_hosts   # production: pin host keys
 
 defaults:

@@ -1,10 +1,12 @@
 """Store samples sent by collectors and evaluate alerts (central server side)."""
+
 import sqlite3
 from datetime import datetime, timedelta
 
 from inspector import alerts, lookup, notify
 from inspector.config import ServerSettings
-from inspector.db import TIME_FORMAT, from_text, to_text, transaction, utcnow
+from inspector.db import TIME_FORMAT, from_text, inserted_id, to_text, transaction, utcnow
+from inspector.errors import PublicError
 from inspector.parsers import SAFE_NAME
 
 MAX_SAMPLES = 2000
@@ -12,7 +14,7 @@ MAX_VALUES = 500
 MAX_CLOCK_SKEW = timedelta(minutes=10)
 
 
-class IngestError(ValueError):
+class IngestError(PublicError):
     pass
 
 
@@ -25,7 +27,7 @@ def validate_sample(s: dict, now: datetime) -> dict:
     try:
         collected = from_text(s.get("collected_at", ""))
     except (TypeError, ValueError):
-        raise IngestError(f"{host}: collected_at must be {TIME_FORMAT}")
+        raise IngestError(f"{host}: collected_at must be {TIME_FORMAT}") from None
     if collected > now + MAX_CLOCK_SKEW:
         raise IngestError(f"{host}: collected_at is in the future (check NTP on the collector)")
     values = s.get("values") or {}
@@ -38,14 +40,25 @@ def validate_sample(s: dict, now: datetime) -> dict:
         if isinstance(value, bool) or not isinstance(value, (int, float, str)):
             raise IngestError(f"{host}: {key} must be a number or string")
         clean[key] = value if not isinstance(value, str) else value[:500]
-    return {"host": host, "datacenter": str(s.get("datacenter") or "")[:20] or None,
-            "collected_at": to_text(collected), "up": 1 if s.get("up") else 0,
-            "duration_s": s.get("duration_s") if isinstance(s.get("duration_s"), (int, float)) else None,
-            "error": (str(s["error"])[:500] if s.get("error") else None), "values": clean}
+    return {
+        "host": host,
+        "datacenter": str(s.get("datacenter") or "")[:20] or None,
+        "collected_at": to_text(collected),
+        "up": 1 if s.get("up") else 0,
+        "duration_s": s.get("duration_s") if isinstance(s.get("duration_s"), (int, float)) else None,
+        "error": (str(s["error"])[:500] if s.get("error") else None),
+        "values": clean,
+    }
 
 
-def ingest(conn: sqlite3.Connection, settings: ServerSettings, collector: str, payload: dict,
-           location_of=None, now: datetime | None = None) -> dict:
+def ingest(
+    conn: sqlite3.Connection,
+    settings: ServerSettings,
+    collector: str,
+    payload: dict,
+    location_of=None,
+    now: datetime | None = None,
+) -> dict:
     now = now or utcnow()
     location_of = location_of or (lambda host: lookup.get_location(conn, host))
     samples = payload.get("samples")
@@ -66,28 +79,47 @@ def ingest(conn: sqlite3.Connection, settings: ServerSettings, collector: str, p
                 """INSERT OR IGNORE INTO samples (host, datacenter, collector, collected_at, received_at,
                                                   up, duration_s, error)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (s["host"], s["datacenter"], collector, s["collected_at"], to_text(now),
-                 s["up"], s["duration_s"], s["error"]))
+                (
+                    s["host"],
+                    s["datacenter"],
+                    collector,
+                    s["collected_at"],
+                    to_text(now),
+                    s["up"],
+                    s["duration_s"],
+                    s["error"],
+                ),
+            )
             if cur.rowcount == 0:
-                duplicates += 1          # re-sent after an outage: already stored
+                duplicates += 1  # re-sent after an outage: already stored
                 continue
             accepted += 1
+            sample_id = inserted_id(cur)
             conn.executemany(
                 "INSERT INTO sample_values (sample_id, key, num, text) VALUES (?, ?, ?, ?)",
-                [(cur.lastrowid, k, v if not isinstance(v, str) else None, v if isinstance(v, str) else None)
-                 for k, v in s["values"].items()])
+                [
+                    (sample_id, k, v if not isinstance(v, str) else None, v if isinstance(v, str) else None)
+                    for k, v in s["values"].items()
+                ],
+            )
             events += alerts.evaluate_host(conn, s["host"], settings.rules, from_text(s["collected_at"]))
 
         # An alert that opened and resolved inside this batch is reported once, as resolved
         # (the message carries both times), instead of two stale notifications.
         resolved_ids = {e["id"] for e in events if e["event"] == "resolved"}
         events = [e for e in events if not (e["event"] == "opened" and e["id"] in resolved_ids)]
+        events = alerts.correlate_racks(conn, events, settings.rack_outage_min_hosts, now)
         notify.enqueue(conn, events, settings.channels, location_of, now, settings.public_url)
 
         conn.execute(
             """UPDATE collectors SET last_seen_at = ?, version = ?, host_count = ?, spooled = ?
                WHERE name = ?""",
-            (to_text(now), str(payload.get("version", ""))[:20],
-             payload.get("host_count") if isinstance(payload.get("host_count"), int) else None,
-             payload.get("spooled") if isinstance(payload.get("spooled"), int) else None, collector))
+            (
+                to_text(now),
+                str(payload.get("version", ""))[:20],
+                payload.get("host_count") if isinstance(payload.get("host_count"), int) else None,
+                payload.get("spooled") if isinstance(payload.get("spooled"), int) else None,
+                collector,
+            ),
+        )
     return {"accepted": accepted, "duplicates": duplicates, "alert_events": len(events)}

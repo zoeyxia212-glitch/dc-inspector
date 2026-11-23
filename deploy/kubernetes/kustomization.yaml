@@ -1,0 +1,21 @@
+# kubectl apply -k deploy/kubernetes     (after creating the secrets: see secrets.example.yaml)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dc-inspector
+labels:
+  - pairs: {app.kubernetes.io/part-of: dc-inspector}
+resources:
+  - namespace.yaml
+  - central.yaml
+  - collector.yaml
+  - networkpolicy.yaml
+configMapGenerator:
+  # config/server.yaml and config/rules.yaml are copies of the repository's config/ directory
+  # (kustomize cannot read outside this folder); tests/testkubernetes.py fails if they drift.
+  - name: central-config
+    files: [config/server.yaml, config/rules.yaml]
+  - name: collector-sh-north
+    files: [collector.yaml=config/sh-north.yaml]
+images:
+  - name: ghcr.io/zoeyxia212-glitch/dc-inspector
+    newTag: "2.1.0"

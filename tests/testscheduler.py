@@ -1,9 +1,9 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from inspector import scheduler
+from conftest import T0, outbox
 
-from conftest import T0, at, outbox
+from inspector import scheduler
 
 
 def test_watchdog_raises_collector_down_and_notifies(conn, settings, push):
@@ -21,14 +21,15 @@ def test_watchdog_sends_reminders(conn, settings, push):
     # the collector is also silent by then, so collector_down opens too
     scheduler.run_watchdog(conn, settings, T0 + timedelta(minutes=31))
     events = [m["event"] for m in outbox(conn)[before:]]
-    assert events.count("reminder") == 2           # both channels for the service_down alert
+    assert events.count("reminder") == 2  # both channels for the service_down alert
 
 
 def test_delivery_through_scheduler(conn, settings, push):
     push(0, **{"service.nginx.up": 0.0})
     sent = []
-    stats = scheduler.run_delivery(conn, settings, T0, {"slack": lambda c, s, b: sent.append(c.name),
-                                                        "wecom": lambda c, s, b: sent.append(c.name)})
+    stats = scheduler.run_delivery(
+        conn, settings, T0, {"slack": lambda c, s, b: sent.append(c.name), "wecom": lambda c, s, b: sent.append(c.name)}
+    )
     assert stats["sent"] == 2 and sorted(sent) == ["all", "critical-only"]
 
 

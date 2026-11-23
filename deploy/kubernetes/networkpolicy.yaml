@@ -1,0 +1,50 @@
+# Default deny, then allow only what each component needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: central
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: central}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:                                   # users via the ingress controller
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+      ports: [{port: 8000}]
+    - from:                                   # collectors pushing samples
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: collector}
+      ports: [{port: 8000}]
+  egress:
+    - ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]      # DNS
+    - ports: [{port: 443}, {port: 587}, {port: 465}]                     # webhooks, SMTP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: collector
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: collector}
+  policyTypes: [Ingress, Egress]
+  ingress: []                                 # nothing connects to a collector
+  egress:
+    - ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: central}
+      ports: [{port: 8000}]
+    - to:                                     # SSH to the inspected hosts of this site only
+        - ipBlock: {cidr: 10.1.0.0/16}
+      ports: [{port: 22}]
+# NetworkPolicy cannot express ICMP; where the CNI drops it, ping reports -1 and the collector
+# falls back to plain host_down (see Failure diagnosis in the README).

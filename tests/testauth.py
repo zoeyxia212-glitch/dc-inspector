@@ -1,10 +1,9 @@
 from datetime import timedelta
 
 import pytest
+from conftest import PASSWORD, T0
 
 from inspector import auth
-
-from conftest import PASSWORD, T0
 
 
 def test_login_and_password_is_hashed(conn, users):
@@ -16,7 +15,7 @@ def test_login_and_password_is_hashed(conn, users):
 
 @pytest.mark.parametrize("username, password", [("otto", "wrong-password"), ("nobody", PASSWORD)])
 def test_same_message_for_unknown_user_and_wrong_password(conn, users, username, password):
-    with pytest.raises(auth.AuthError, match="^Invalid username or password$"):
+    with pytest.raises(auth.AuthError, match=r"^Invalid username or password$"):
         auth.authenticate(conn, username, password)
 
 
@@ -25,7 +24,7 @@ def test_lockout_after_repeated_failures(conn, users):
         with pytest.raises(auth.AuthError):
             auth.authenticate(conn, "otto", "wrong-password", now=T0)
     with pytest.raises(auth.AuthError, match="locked"):
-        auth.authenticate(conn, "otto", PASSWORD, now=T0 + timedelta(minutes=1))   # even the right password
+        auth.authenticate(conn, "otto", PASSWORD, now=T0 + timedelta(minutes=1))  # even the right password
     assert auth.authenticate(conn, "otto", PASSWORD, now=T0 + timedelta(minutes=16))
 
 
@@ -63,10 +62,27 @@ def test_collector_tokens(conn):
     assert auth.collector_for_token(conn, None) is None
     stored = conn.execute("SELECT token_hash FROM collectors WHERE name='sh-south'").fetchone()[0]
     assert token not in stored
-    new = auth.register_collector(conn, "sh-south")          # rotation invalidates the old token
+    new = auth.register_collector(conn, "sh-south")  # rotation invalidates the old token
     assert auth.collector_for_token(conn, token) is None and auth.collector_for_token(conn, new) == "sh-south"
 
 
-def test_short_collector_token_rejected(conn):
-    with pytest.raises(auth.AuthError):
-        auth.register_collector(conn, "x", "short")
+@pytest.mark.parametrize(
+    "token",
+    [
+        "short",
+        "datacenter-shanghai-2026-north-token-secret",  # human-made, no prefix
+        "dcc_" + "a" * 43,  # right shape, no entropy
+        "dcc_" + "ab" * 22,
+        "dcc_north0123456789ABCDEFGHIJKLMNOPQRSTUVWXY!",  # character outside base64url
+    ],
+)
+def test_weak_preshared_collector_token_rejected(conn, token):
+    with pytest.raises(auth.AuthError, match="gen-token"):
+        auth.register_collector(conn, "x", token)
+
+
+def test_generated_collector_tokens_are_accepted(conn):
+    token = auth.new_collector_token()
+    assert token.startswith("dcc_") and len(token) == 47
+    assert auth.register_collector(conn, "sh-east", token) == token
+    assert auth.collector_for_token(conn, token) == "sh-east"

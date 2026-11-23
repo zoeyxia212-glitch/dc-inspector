@@ -7,11 +7,10 @@ from datetime import timedelta
 from unittest import mock
 
 import pytest
+from conftest import T0, outbox
 
 from inspector import notify
 from inspector.config import Channel
-
-from conftest import T0, outbox
 
 
 def ch(type_, **settings):
@@ -34,13 +33,19 @@ class FakeResponse:
 
 def sent_request(fn, channel, body=b'{"errcode": 0}'):
     with mock.patch("urllib.request.urlopen", return_value=FakeResponse(body)) as urlopen:
-        fn(channel, "[CRITICAL] h1 service_down [nginx]", "[CRITICAL] h1 service_down [nginx]\nService nginx is not running\nLocation: SH01-A01 U2")
+        fn(
+            channel,
+            "[CRITICAL] h1 service_down [nginx]",
+            "[CRITICAL] h1 service_down [nginx]\nService nginx is not running\nLocation: SH01-A01 U2",
+        )
     req = urlopen.call_args[0][0]
     return req.full_url, json.loads(req.data)
 
 
 def test_wecom_markdown_payload():
-    url, payload = sent_request(notify.send_wecom, ch("wecom", webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=K"))
+    _url, payload = sent_request(
+        notify.send_wecom, ch("wecom", webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=K")
+    )
     assert payload["msgtype"] == "markdown"
     assert payload["markdown"]["content"].startswith("**[CRITICAL] h1 service_down [nginx]**")
     assert "> Location: SH01-A01 U2" in payload["markdown"]["content"]
@@ -48,8 +53,10 @@ def test_wecom_markdown_payload():
 
 def test_dingtalk_signed_url():
     with mock.patch("time.time", return_value=1700000000.0):
-        url, payload = sent_request(notify.send_dingtalk,
-                                    ch("dingtalk", webhook_url="https://oapi.dingtalk.com/robot/send?access_token=T", secret="SEC"))
+        url, payload = sent_request(
+            notify.send_dingtalk,
+            ch("dingtalk", webhook_url="https://oapi.dingtalk.com/robot/send?access_token=T", secret="SEC"),
+        )
     query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
     assert query["timestamp"] == ["1700000000000"]
     expected = base64.b64encode(hmac.new(b"SEC", b"1700000000000\nSEC", hashlib.sha256).digest()).decode()
@@ -59,7 +66,11 @@ def test_dingtalk_signed_url():
 
 def test_wecom_errcode_is_a_failure():
     with pytest.raises(RuntimeError, match="93000"):
-        sent_request(notify.send_wecom, ch("wecom", webhook_url="https://x"), b'{"errcode": 93000, "errmsg": "invalid webhook url"}')
+        sent_request(
+            notify.send_wecom,
+            ch("wecom", webhook_url="https://x"),
+            b'{"errcode": 93000, "errmsg": "invalid webhook url"}',
+        )
 
 
 def test_slack_payload():
@@ -75,8 +86,14 @@ def test_webhook_from_environment(monkeypatch):
 
 def test_email(monkeypatch):
     monkeypatch.setenv("SMTP_PW", "s3cret")
-    channel = ch("email", host="smtp.example.com", port=587, username="u", password_env="SMTP_PW",
-                 **{"from": "inspector@example.com", "to": ["ops@example.com", "noc@example.com"]})
+    channel = ch(
+        "email",
+        host="smtp.example.com",
+        port=587,
+        username="u",
+        password_env="SMTP_PW",
+        **{"from": "inspector@example.com", "to": ["ops@example.com", "noc@example.com"]},
+    )
     with mock.patch("smtplib.SMTP") as smtp:
         notify.send_email(channel, "subj", "body")
     server = smtp.return_value.__enter__.return_value
@@ -88,9 +105,11 @@ def test_email(monkeypatch):
 
 # ---------------------------------------------------------- outbox delivery
 def queue_one(conn, channel_name="all"):
-    conn.execute("""INSERT INTO outbox (channel, event, subject, body, status, next_attempt_at, created_at)
+    conn.execute(
+        """INSERT INTO outbox (channel, event, subject, body, status, next_attempt_at, created_at)
                     VALUES (?, 'opened', 's', 'b', 'pending', '2026-11-18T00:00:00Z', '2026-11-18T00:00:00Z')""",
-                 (channel_name,))
+        (channel_name,),
+    )
 
 
 def test_delivery_success(conn, settings):
@@ -106,6 +125,7 @@ def test_retry_with_backoff_then_give_up(conn, settings):
 
     def broken(c, s, b):
         raise OSError("connection refused")
+
     now = T0
     for attempt in range(1, notify.MAX_ATTEMPTS):
         assert notify.deliver_pending(conn, settings.channels, now, {"slack": broken})["retry"] == 1
@@ -113,8 +133,9 @@ def test_retry_with_backoff_then_give_up(conn, settings):
         assert row["attempts"] == attempt
         delay = notify.BASE_BACKOFF_SECONDS * 2 ** (attempt - 1)
         # not retried before the backoff has passed
-        assert notify.deliver_pending(conn, settings.channels, now + timedelta(seconds=delay - 1), {"slack": broken}) == \
-            {"sent": 0, "retry": 0, "failed": 0}
+        assert notify.deliver_pending(
+            conn, settings.channels, now + timedelta(seconds=delay - 1), {"slack": broken}
+        ) == {"sent": 0, "retry": 0, "failed": 0}
         now += timedelta(seconds=delay)
     assert notify.deliver_pending(conn, settings.channels, now, {"slack": broken})["failed"] == 1
     row = outbox(conn)[0]
@@ -133,7 +154,14 @@ def test_datacenter_filter():
 
 
 def test_resolved_message_has_duration():
-    event = {"event": "resolved", "host": "h", "rule": "cpu_high", "target": "", "severity": "critical",
-             "opened_at": "2026-11-18T00:00:00Z", "resolved_at": "2026-11-18T00:12:00Z"}
+    event = {
+        "event": "resolved",
+        "host": "h",
+        "rule": "cpu_high",
+        "target": "",
+        "severity": "critical",
+        "opened_at": "2026-11-18T00:00:00Z",
+        "resolved_at": "2026-11-18T00:12:00Z",
+    }
     subject, body = notify.format_event(event, "SH01-A01 U2")
     assert subject == "[RESOLVED] h cpu_high" and "Duration: 12 min" in body

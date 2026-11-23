@@ -60,8 +60,9 @@
     <button data-tab="maint">Maintenance</button>
     <button data-tab="reports">Reports</button>
     <button data-tab="admin" class="admin-only">Admin</button>
+    <button data-tab="account">Account</button>
   </nav>
-  <div class="user"><span>{{ user.username }} · {{ user.role }}</span>
+  <div class="user"><a href="/api/docs" target="_blank" style="color:#b8bfcc">API docs</a><span>{{ user.username }} · {{ user.role }}</span>
     <form method="post" action="/logout"><button>Sign out</button></form></div>
 </header>
 <main>
@@ -119,6 +120,20 @@
     <div id="import-result" style="margin-top:10px"></div>
     <h2>Audit log</h2><div id="audit"></div>
   </section>
+  <section id="account">
+    <h2>Personal API tokens</h2>
+    <p class="hint">For scripts and automation (e.g. a CMDB sync job): send <code>Authorization: Bearer dci_…</code>.
+      A token never has more rights than you, always expires, and the secret is shown only once.
+      See the <a href="/api/docs" target="_blank">API documentation</a>.</p>
+    <form id="token-form" class="inline">
+      <input id="t-name" placeholder="Token name, e.g. cmdb-sync" required maxlength="60">
+      <select id="t-role"></select>
+      <select id="t-days"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">1 year</option></select>
+      <button class="primary">Create token</button>
+    </form>
+    <div id="token-created" style="margin-top:10px"></div>
+    <div id="tokens" style="margin-top:12px"></div>
+  </section>
 </main>
 <div id="toast"></div>
 <script>
@@ -134,6 +149,13 @@ const pct = v => v === null || v === undefined ? "–" :
 const when = t => t ? new Date(t).toLocaleString() : "";
 const ago = t => { if (!t) return "never"; const s = Math.round((Date.now() - new Date(t)) / 1000);
   return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s/60)} min ago` : `${Math.round(s/3600)} h ago`; };
+// Why a host is not inspectable: who should act (network/hardware, host admin, security).
+function diag(x) {
+  if (x.ssh_error === "auth_failed") return "SSH LOGIN REJECTED";
+  if (x.ssh_error === "host_key") return "HOST KEY CHANGED";
+  if (x.ping === 1) return `SSH DOWN (ping ok, ${x.ssh_error || "error"})`;
+  return x.ping === -1 ? "DOWN (no ping data)" : "DOWN (no ping)";
+}
 function toast(msg) { const t = document.getElementById("toast"); t.textContent = msg; t.style.display = "block"; setTimeout(() => t.style.display = "none", 3000); }
 
 async function api(path, method = "GET", data) {
@@ -147,7 +169,7 @@ async function api(path, method = "GET", data) {
 
 // ---------- tabs ----------
 let timer = null;
-const loaders = {monitor: loadMonitor, maint: loadSilences, reports: loadReports, admin: loadAdmin};
+const loaders = {monitor: loadMonitor, maint: loadSilences, reports: loadReports, admin: loadAdmin, account: loadTokens};
 function show(tab) {
   document.querySelectorAll("nav button, section").forEach(el => el.classList.remove("active"));
   document.querySelector(`nav button[data-tab=${tab}]`).classList.add("active");
@@ -170,7 +192,7 @@ async function loadMonitor() {
     `<table><tr><th>Severity</th><th>Host</th><th>Location</th><th>Rule</th><th>Detail</th><th>Since</th><th></th></tr>` +
     a.alerts.map(x => `<tr><td class="${esc(x.severity)}">${esc(x.severity)}</td><td>${esc(x.host)}</td>
       <td>${esc(x.location)}</td><td>${esc(x.rule)}${x.target ? ` <span class="tag">${esc(x.target)}</span>` : ""}</td>
-      <td>${esc(x.summary)}${x.silenced ? ' <span class="tag sil">maintenance</span>' : ""}
+      <td>${esc(x.summary)}${x.silenced ? ' <span class="tag sil">maintenance</span>' : ""}${x.parent_id ? ' <span class="tag">grouped in rack outage</span>' : ""}
         ${x.acked_by ? `<br><span class="tag ack">ack ${esc(x.acked_by)}</span> <span class="muted">${esc(x.ack_note)}</span>` : ""}</td>
       <td>${esc(when(x.opened_at))}</td>
       <td>${!x.acked_by && can("operator") ? `<button class="small" data-ack="${x.id}">Acknowledge</button>` : ""}</td></tr>`).join("") + "</table>";
@@ -185,7 +207,7 @@ async function loadMonitor() {
     `<table><tr><th>Host</th><th>Location</th><th>Collector</th><th>Status</th><th>CPU</th><th>Memory</th><th>Load/core</th>
       <th>Disk</th><th>Services down</th><th>Alerts</th><th>Last check</th></tr>` +
     h.hosts.map(x => `<tr class="hostlink" data-asset="${esc(x.asset_id)}"><td>${esc(x.host)}</td><td>${esc(x.location)}</td><td>${esc(x.collector)}</td>
-      <td class="${!x.up ? "bad" : x.stale ? "stale" : "ok"}">${!x.up ? "DOWN" : x.stale ? "STALE" : "up"}</td>
+      <td class="${!x.up ? "bad" : x.stale ? "stale" : "ok"}" title="${esc(x.error)}">${!x.up ? diag(x) : x.stale ? "STALE" : "up"}</td>
       <td>${pct(x.cpu)}</td><td>${pct(x.mem)}</td><td>${x.load_per_core ?? "–"}</td>
       <td>${Object.entries(x.disks).map(([m, v]) => `${esc(m)} ${pct(v)}`).join("<br>") || "–"}</td>
       <td class="${x.services_down.length ? "bad" : ""}">${esc(x.services_down.join(", ")) || "–"}</td>
@@ -268,7 +290,7 @@ async function showDetail(assetId) {
   let status = '<p class="muted">Not monitored (no inspection data for this device).</p>';
   if (s) {
     status = `<div class="cards">
-      <div class="card ${s.up ? "" : "bad"}"><b>${s.up ? (s.stale ? '<span class="stale">STALE</span>' : '<span class="ok">UP</span>') : '<span class="bad">DOWN</span>'}</b><br>
+      <div class="card ${s.up ? "" : "bad"}"><b>${s.up ? (s.stale ? '<span class="stale">STALE</span>' : '<span class="ok">UP</span>') : `<span class="bad">${diag(s)}</span>`}</b><br>
         last check ${ago(s.collected_at)} via ${esc(s.collector)}</div>
       <div class="card"><b>CPU</b><br>${pct(s.cpu)}</div><div class="card"><b>Memory</b><br>${pct(s.mem)}</div>
       <div class="card"><b>Disk</b><br>${Object.entries(s.disks).map(([k, v]) => `${esc(k)} ${pct(v)}`).join("<br>") || "–"}</div>
@@ -361,6 +383,39 @@ document.querySelectorAll("#import-form button[data-dry]").forEach(btn => btn.ad
     : `<p class="error">${esc(r.error || `${r.error_count} problem(s), nothing imported:`)}</p><ul>${(r.errors || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
   if (r.ok && !dry) loadAdmin();
 }));
+// ---------- account: API tokens ----------
+document.getElementById("t-role").innerHTML = ["viewer", "operator", "admin"].filter(can)
+  .map(r => `<option ${r === ROLE ? "selected" : ""}>${r}</option>`).join("");
+async function loadTokens() {
+  const data = await api("/api/v1/tokens");
+  const rows = data.tokens.map(t => {
+    const state = t.revoked_at ? "revoked" : (new Date(t.expires_at) < new Date() ? "expired" : "active");
+    return `<tr><td>${esc(t.name)}</td><td><code>${esc(t.prefix)}…</code></td><td>${esc(t.role)}</td>
+      <td class="${state === "active" ? "ok" : "muted"}">${state}</td><td>${esc(when(t.expires_at))}</td>
+      <td>${esc(when(t.last_used_at)) || "never"}</td>
+      <td>${state === "active" ? `<button class="small secondary" data-revoke="${t.id}">Revoke</button>` : ""}</td></tr>`;
+  }).join("");
+  document.getElementById("tokens").innerHTML = rows
+    ? `<table><tr><th>Name</th><th>Token</th><th>Role</th><th>State</th><th>Expires</th><th>Last used</th><th></th></tr>${rows}</table>`
+    : '<p class="muted">No tokens yet.</p>';
+  document.querySelectorAll("[data-revoke]").forEach(b => b.addEventListener("click", async () => {
+    if (!confirm("Revoke this token? Scripts using it will stop working.")) return;
+    try { await api(`/api/v1/tokens/${b.dataset.revoke}`, "DELETE"); toast("Token revoked"); loadTokens(); }
+    catch (e) { toast(e.message); }
+  }));
+}
+document.getElementById("token-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  try {
+    const t = await api("/api/v1/tokens", "POST", {name: document.getElementById("t-name").value,
+      role: document.getElementById("t-role").value, expires_days: +document.getElementById("t-days").value});
+    document.getElementById("token-created").innerHTML = `<div class="panel"><b>Copy this token now — it will not be shown again.</b><br>
+      <code style="user-select:all;word-break:break-all">${esc(t.token)}</code><br>
+      <span class="muted">${esc(t.role)} · expires ${esc(when(t.expires_at))}</span></div>`;
+    e.target.reset(); loadTokens();
+  } catch (err) { toast(err.message); }
+});
+
 document.getElementById("user-form")?.addEventListener("submit", async e => {
   e.preventDefault();
   try {

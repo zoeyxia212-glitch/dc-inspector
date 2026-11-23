@@ -3,26 +3,72 @@
 Dev:   python -m inspector.main server
 Prod:  gunicorn -w 2 -b 0.0.0.0:8000 "inspector.app:create_app()"   (behind a TLS reverse proxy)
 """
+
+import json
 import logging
 import os
+import re
 import secrets
+import time
+import uuid
 from datetime import timedelta
 from functools import wraps
 from pathlib import Path
 
-from flask import (Flask, Response, abort, g, jsonify, redirect, render_template, request,
-                   send_from_directory, session, url_for)
+from flask import (
+    Flask,
+    Response,
+    abort,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_from_directory,
+    session,
+    url_for,
+)
 
-from inspector import __version__, alerts, auth, inventory, lookup, metrics
+from inspector import __version__, alerts, auth, inventory, lookup, metrics, ops
 from inspector.config import DEFAULT_SERVER_CONFIG, REPORT_DIR, ServerSettings, load_server_config
-from inspector.db import DEFAULT_DB_PATH, connect, from_text, init_schema, to_text, transaction, utcnow
+from inspector.db import (
+    DEFAULT_DB_PATH,
+    SCHEMA_VERSION,
+    connect,
+    from_text,
+    init_schema,
+    schema_version,
+    to_text,
+    transaction,
+    utcnow,
+)
+from inspector.errors import InputError, int_arg, log_safe
 from inspector.ingest import IngestError, ingest
+from inspector.logs import request_id_var
 
 log = logging.getLogger(__name__)
+access_log = logging.getLogger("inspector.access")
+REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+OPENAPI_PATH = Path(__file__).resolve().parent / "openapi.yaml"
+# Inline <script>/<style> are used by the single-page UI, hence 'unsafe-inline' for those two only.
+CSP = (
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+)
+DOCS_CSP = (
+    "default-src 'self'; script-src 'self' https://unpkg.com 'unsafe-inline'; "
+    "style-src 'self' https://unpkg.com 'unsafe-inline'; img-src 'self' data: https://unpkg.com; "
+    "frame-ancestors 'none'; base-uri 'none'"
+)
 
 
-def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | None = None,
-               report_dir=REPORT_DIR, secret_key: str | None = None) -> Flask:
+def create_app(
+    db_path=DEFAULT_DB_PATH,
+    conn=None,
+    settings: ServerSettings | None = None,
+    report_dir=REPORT_DIR,
+    secret_key: str | None = None,
+) -> Flask:
     app = Flask(__name__)
     settings = settings or load_server_config(DEFAULT_SERVER_CONFIG)
     report_dir = Path(report_dir)
@@ -44,6 +90,9 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         c = connect(db_path)
         init_schema(c)
         c.close()
+    login_limiter = auth.RateLimiter(
+        int(os.environ.get("INSPECTOR_LOGIN_LIMIT", 10)), float(os.environ.get("INSPECTOR_LOGIN_WINDOW", 300))
+    )
 
     def db():
         if conn is not None:
@@ -62,10 +111,61 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         return request.headers.get("X-Real-IP") or request.remote_addr
 
     def current_user():
+        """Session (browser) or personal API token (scripts: Authorization: Bearer dci_...)."""
         if "user" not in g:
+            g.user, g.auth_method = None, None
             uid = session.get("uid")
-            g.user = auth.get_user(db(), uid) if uid else None
+            header = request.headers.get("Authorization", "")
+            if uid:
+                g.user, g.auth_method = auth.get_user(db(), uid), "session"
+            elif header.startswith("Bearer " + auth.API_TOKEN_PREFIX):
+                g.user, g.auth_method = auth.user_for_api_token(db(), header[7:]), "token"
         return g.user
+
+    # ------------------------------------------------------------ request lifecycle
+    @app.before_request
+    def start_request():
+        incoming = request.headers.get("X-Request-ID", "")
+        g.request_id = incoming if REQUEST_ID_RE.match(incoming) else uuid.uuid4().hex
+        g.request_token = request_id_var.set(g.request_id)
+        g.started = time.perf_counter()
+
+    @app.after_request
+    def finish_request(response):
+        response.headers["X-Request-ID"] = g.get("request_id", "")
+        response.headers.setdefault("Content-Security-Policy", CSP)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if app.config["SESSION_COOKIE_SECURE"]:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        if request.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        user = g.get("user")
+        level = logging.DEBUG if request.path.startswith(("/health", "/metrics")) else logging.INFO
+        method, path, ip = log_safe(request.method), log_safe(request.path), log_safe(client_ip())
+        access_log.log(
+            level,
+            "%s %s %s",
+            method,
+            path,
+            response.status_code,
+            extra={
+                "method": method,
+                "path": path,
+                "status": response.status_code,
+                "duration_ms": round((time.perf_counter() - g.get("started", time.perf_counter())) * 1000, 1),
+                "user": user["username"] if user else None,
+                "ip": ip,
+            },
+        )
+        return response
+
+    @app.teardown_request
+    def end_request(_exc):
+        token = g.pop("request_token", None)
+        if token is not None:
+            request_id_var.reset(token)
 
     def require(role="viewer"):
         def deco(fn):
@@ -82,11 +182,15 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
                     # JSON-only writes: a cross-site HTML form cannot send application/json (CSRF protection)
                     return jsonify(error="Content-Type must be application/json"), 415
                 return fn(*args, **kwargs)
+
             return wrapper
+
         return deco
 
     def audit(action, detail=""):
         user = current_user()
+        if user and user.get("token_name"):
+            detail = f"[token {user['token_name']}] {detail}"
         auth.audit(db(), user["username"] if user else None, action, detail, client_ip())
 
     def body():
@@ -97,7 +201,13 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
 
     @app.errorhandler(400)
     def bad_request(exc):
-        return jsonify(error=getattr(exc, "description", "Bad request")), 400
+        return jsonify(error=getattr(exc, "description", "Bad request"), request_id=g.get("request_id")), 400
+
+    @app.errorhandler(500)
+    def server_error(exc):
+        # Details go to the log (with the request ID), never to the client.
+        log.error("Unhandled error", exc_info=getattr(exc, "original_exception", exc))
+        return jsonify(error="Internal server error", request_id=g.get("request_id")), 500
 
     # ------------------------------------------------------------ pages / login
     @app.get("/login")
@@ -107,12 +217,16 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @app.post("/login")
     def login():
         username = request.form.get("username", "").strip()
+        if not login_limiter.allow(client_ip() or "unknown"):
+            auth.audit(db(), username or None, "login_rate_limited", "", client_ip())
+            error = "Too many sign-in attempts from your address. Wait a few minutes and try again."
+            return render_template("login.html", error=error), 429
         try:
             # autocommit (no transaction): the failed-attempt counter must persist when this raises
             user = auth.authenticate(db(), username, request.form.get("password", ""))
         except auth.AuthError as exc:
-            auth.audit(db(), username or None, "login_failed", str(exc), client_ip())
-            return render_template("login.html", error=str(exc)), 401
+            auth.audit(db(), username or None, "login_failed", exc.message, client_ip())
+            return render_template("login.html", error=exc.message), 401
         auth.audit(db(), username, "login", "", client_ip())
         session.clear()
         session.permanent = True
@@ -131,10 +245,97 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     def index():
         return render_template("index.html", user=current_user(), version=__version__)
 
-    @app.get("/health")
-    def health():
-        db().execute("SELECT 1")
+    # ------------------------------------------------------------ health (Kubernetes probes)
+    @app.get("/health/live")
+    def health_live():
+        """Liveness: the process answers. Never touches dependencies, so a slow DB doesn't cause restarts."""
         return jsonify(status="ok", version=__version__)
+
+    @app.get("/health/ready")
+    @app.get("/health")
+    def health_ready():
+        """Readiness: can serve traffic (database reachable, schema up to date)."""
+        checks = {}
+        try:
+            db().execute("SELECT 1")
+            version = schema_version(db())
+            checks["database"] = "ok"
+            checks["schema"] = "ok" if version == SCHEMA_VERSION else f"version {version}, expected {SCHEMA_VERSION}"
+        except Exception as exc:  # report, don't crash, so the probe gets a clear 503
+            checks["database"] = f"error: {type(exc).__name__}"
+        ready = all(v == "ok" for v in checks.values())
+        return jsonify(status="ok" if ready else "unavailable", version=__version__, checks=checks), (
+            200 if ready else 503
+        )
+
+    # ------------------------------------------------------------ API documentation
+    @app.get("/api/v1/openapi.json")
+    def openapi_spec():
+        import yaml
+
+        spec = yaml.safe_load(OPENAPI_PATH.read_text(encoding="utf-8"))
+        spec["info"]["version"] = __version__
+        return Response(json.dumps(spec), mimetype="application/json")
+
+    @app.get("/api/docs")
+    def api_docs():
+        response = Response(render_template("apidocs.html"), mimetype="text/html")
+        response.headers["Content-Security-Policy"] = DOCS_CSP
+        return response
+
+    # ------------------------------------------------------------ personal API tokens
+    @app.get("/api/v1/tokens")
+    @require()
+    def list_tokens():
+        user = current_user()
+        everyone = request.args.get("all") == "1" and auth.has_role(user["role"], "admin")
+        return jsonify(tokens=auth.list_api_tokens(db(), None if everyone else user["id"]))
+
+    @app.post("/api/v1/tokens")
+    @require()
+    def create_token():
+        if g.auth_method == "token":
+            return jsonify(error="Create tokens from a signed-in browser session, not with another token"), 403
+        data = body()
+        try:
+            with transaction(db()):
+                created = auth.create_api_token(
+                    db(),
+                    current_user()["id"],
+                    str(data.get("name", "")),
+                    data.get("role") if isinstance(data.get("role"), str) else None,
+                    int_arg(data.get("expires_days", 90), "expires_days", 1, auth.MAX_TOKEN_DAYS),
+                )
+                audit("token_create", f"{created['name']} ({created['role']}, expires {created['expires_at']})")
+        except (auth.AuthError, InputError) as exc:
+            return jsonify(error=exc.message), 400
+        return jsonify(created), 201
+
+    @app.delete("/api/v1/tokens/<int:token_id>")
+    @require()
+    def revoke_token(token_id):
+        user = current_user()
+        owner = None if auth.has_role(user["role"], "admin") else user["id"]
+        with transaction(db()):
+            if not auth.revoke_api_token(db(), token_id, owner):
+                return jsonify(error="No active token with that id"), 404
+            audit("token_revoke", f"#{token_id}")
+        return jsonify(ok=True)
+
+    @app.get("/metrics")
+    def prometheus():
+        """Self-monitoring for Prometheus. Bearer token if INSPECTOR_METRICS_TOKEN is set, else login."""
+        token = os.environ.get("INSPECTOR_METRICS_TOKEN")
+        header = request.headers.get("Authorization", "")
+        if token:
+            if not secrets.compare_digest(header, f"Bearer {token}"):
+                return Response("unauthorized\n", status=401, mimetype="text/plain")
+        elif current_user() is None:
+            return Response("login or INSPECTOR_METRICS_TOKEN required\n", status=401, mimetype="text/plain")
+        body_text = ops.prometheus_metrics(
+            db(), settings.collector_stale_seconds, None if conn is not None else db_path
+        )
+        return Response(body_text, mimetype="text/plain; version=0.0.4")
 
     @app.get("/api/v1/me")
     @require()
@@ -151,7 +352,7 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         try:
             results = lookup.search(db(), query)
         except lookup.InvalidQuery as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         audit("device_search", query)
         return jsonify(query=query, count=len(results), devices=results)
 
@@ -165,10 +366,14 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         snap = metrics.latest(c, settings.interval_seconds * 3, host=device["hostname"])
         device["monitoring"] = {
             "latest": snap[0] if snap else None,
-            "alerts": [dict(r) for r in c.execute(
-                """SELECT id, rule, target, severity, summary, status, opened_at, resolved_at, acked_by, silenced
+            "alerts": [
+                dict(r)
+                for r in c.execute(
+                    """SELECT id, rule, target, severity, summary, status, opened_at, resolved_at, acked_by, silenced
                    FROM alerts WHERE host = ? ORDER BY status = 'resolved', opened_at DESC LIMIT 20""",
-                (device["hostname"],))],
+                    (device["hostname"],),
+                )
+            ],
         }
         return jsonify(device)
 
@@ -184,8 +389,11 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @require()
     def export_inventory():
         audit("inventory_export")
-        return Response(inventory.export_csv(db()), mimetype="text/csv",
-                        headers={"Content-Disposition": "attachment; filename=inventory.csv"})
+        return Response(
+            inventory.export_csv(db()),
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=inventory.csv"},
+        )
 
     @app.post("/api/v1/inventory/import")
     @require("admin")
@@ -196,8 +404,9 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
             return jsonify(error="csv text is required"), 400
         result = inventory.import_csv(db(), text, dry_run=dry_run)
         if result.ok and not dry_run:
-            audit("inventory_import", f"created {result.created}, updated {result.updated}, "
-                                      f"unchanged {result.unchanged}")
+            audit(
+                "inventory_import", f"created {result.created}, updated {result.updated}, unchanged {result.unchanged}"
+            )
         return jsonify(result.to_dict()), (200 if result.ok else 422)
 
     # ------------------------------------------------------------ monitoring
@@ -212,10 +421,10 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     def host_history(host):
         keys = [k for k in request.args.get("keys", "cpu.percent,mem.percent").split(",") if k]
         try:
-            hours = int(request.args.get("hours", 24))
+            hours = int_arg(request.args.get("hours", 24), "hours", 1, 744)
             series = metrics.history(db(), host, keys, hours)
-        except ValueError as exc:
-            return jsonify(error=str(exc)), 400
+        except InputError as exc:
+            return jsonify(error=exc.message), 400
         return jsonify(host=host, hours=hours, series=series)
 
     @app.get("/api/v1/alerts")
@@ -226,11 +435,16 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
             return jsonify(error="status must be open, resolved or all"), 400
         where, params = ("", ()) if status == "all" else ("WHERE status = ?", (status,))
         c = db()
-        rows = [dict(r) for r in c.execute(
-            f"""SELECT * FROM alerts {where}
+        rows = [
+            dict(r)
+            for r in c.execute(
+                f"""SELECT * FROM alerts {where}
                 ORDER BY status = 'resolved', acked_at IS NOT NULL,
                          CASE severity WHEN 'critical' THEN 0 ELSE 1 END, opened_at DESC
-                LIMIT 300""", params)]
+                LIMIT 300""",
+                params,
+            )
+        ]
         for r in rows:
             r["location"] = lookup.get_location(c, r["host"])
         return jsonify(count=len(rows), alerts=rows)
@@ -249,8 +463,10 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @require()
     def list_silences():
         now = to_text(utcnow())
-        rows = [dict(r) | {"active": r["starts_at"] <= now < r["ends_at"]} for r in db().execute(
-            "SELECT * FROM silences WHERE ends_at > ? ORDER BY starts_at", (now,))]
+        rows = [
+            dict(r) | {"active": r["starts_at"] <= now < r["ends_at"]}
+            for r in db().execute("SELECT * FROM silences WHERE ends_at > ? ORDER BY starts_at", (now,))
+        ]
         return jsonify(silences=rows)
 
     @app.post("/api/v1/silences")
@@ -258,23 +474,38 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     def create_silence():
         data = body()
         try:
-            starts = from_text(data["starts_at"]) if data.get("starts_at") else utcnow()
-            ends = starts + timedelta(minutes=int(data["duration_minutes"]))
+            try:
+                starts = from_text(str(data["starts_at"])) if data.get("starts_at") else utcnow()
+            except ValueError:
+                raise InputError("starts_at must look like 2026-11-23T01:00:00Z") from None
+            ends = starts + timedelta(minutes=int_arg(data.get("duration_minutes"), "duration_minutes", 1, 43200))
             with transaction(db()):
-                sid = alerts.add_silence(db(), str(data.get("host_pattern", "")), str(data.get("rule_pattern", "*")),
-                                         starts, ends, str(data.get("reason", "")), current_user()["username"])
-                audit("silence_create", f"#{sid} {data.get('host_pattern')} {data.get('rule_pattern', '*')} "
-                                        f"{data.get('duration_minutes')}min: {data.get('reason')}")
-        except (KeyError, ValueError, TypeError) as exc:
-            return jsonify(error=f"Invalid silence: {exc}"), 400
+                sid = alerts.add_silence(
+                    db(),
+                    str(data.get("host_pattern", "")),
+                    str(data.get("rule_pattern", "*")),
+                    starts,
+                    ends,
+                    str(data.get("reason", "")),
+                    current_user()["username"],
+                )
+                audit(
+                    "silence_create",
+                    f"#{sid} {data.get('host_pattern')} {data.get('rule_pattern', '*')} "
+                    f"{data.get('duration_minutes')}min: {data.get('reason')}",
+                )
+        except InputError as exc:
+            return jsonify(error=f"Invalid silence: {exc.message}"), 400
         return jsonify(id=sid), 201
 
     @app.delete("/api/v1/silences/<int:silence_id>")
     @require("operator")
     def end_silence(silence_id):
         with transaction(db()):
-            cur = db().execute("UPDATE silences SET ends_at = ? WHERE id = ? AND ends_at > ?",
-                               (to_text(utcnow()), silence_id, to_text(utcnow())))
+            cur = db().execute(
+                "UPDATE silences SET ends_at = ? WHERE id = ? AND ends_at > ?",
+                (to_text(utcnow()), silence_id, to_text(utcnow())),
+            )
             if cur.rowcount == 0:
                 return jsonify(error="No active or upcoming silence with that id"), 404
             audit("silence_end", f"#{silence_id}")
@@ -298,8 +529,12 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
     @app.get("/api/v1/users")
     @require("admin")
     def list_users():
-        rows = [dict(r) for r in db().execute(
-            "SELECT username, role, active, locked_until, created_at, last_login_at FROM users ORDER BY username")]
+        rows = [
+            dict(r)
+            for r in db().execute(
+                "SELECT username, role, active, locked_until, created_at, last_login_at FROM users ORDER BY username"
+            )
+        ]
         return jsonify(users=rows)
 
     @app.post("/api/v1/users")
@@ -308,11 +543,12 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         data = body()
         try:
             with transaction(db()):
-                auth.create_user(db(), str(data.get("username", "")), str(data.get("password", "")),
-                                 str(data.get("role", "viewer")))
+                auth.create_user(
+                    db(), str(data.get("username", "")), str(data.get("password", "")), str(data.get("role", "viewer"))
+                )
                 audit("user_create", f"{data.get('username')} as {data.get('role', 'viewer')}")
         except auth.AuthError as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         return jsonify(ok=True), 201
 
     @app.patch("/api/v1/users/<username>")
@@ -321,22 +557,30 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         data = body()
         try:
             with transaction(db()):
-                auth.update_user(db(), username, role=data.get("role"),
-                                 active=data.get("active") if isinstance(data.get("active"), bool) else None,
-                                 password=data.get("password"))
+                auth.update_user(
+                    db(),
+                    username,
+                    role=data.get("role"),
+                    active=data.get("active") if isinstance(data.get("active"), bool) else None,
+                    password=data.get("password"),
+                )
                 changes = ", ".join(f"{k}={'***' if k == 'password' else v}" for k, v in data.items())
                 audit("user_update", f"{username}: {changes}")
         except auth.AuthError as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         return jsonify(ok=True)
 
     @app.get("/api/v1/collectors")
     @require()
     def list_collectors():
         stale_before = to_text(utcnow() - timedelta(seconds=settings.collector_stale_seconds))
-        rows = [dict(r) | {"healthy": bool(r["last_seen_at"] and r["last_seen_at"] >= stale_before)}
-                for r in db().execute(
-                    "SELECT name, created_at, last_seen_at, last_ip, version, host_count, spooled FROM collectors ORDER BY name")]
+        rows = [
+            dict(r) | {"healthy": bool(r["last_seen_at"] and r["last_seen_at"] >= stale_before)}
+            for r in db().execute(
+                "SELECT name, created_at, last_seen_at, last_ip, version, host_count, spooled "
+                "FROM collectors ORDER BY name"
+            )
+        ]
         return jsonify(collectors=rows)
 
     @app.get("/api/v1/audit")
@@ -370,7 +614,7 @@ def create_app(db_path=DEFAULT_DB_PATH, conn=None, settings: ServerSettings | No
         try:
             result = ingest(db(), settings, name, payload)
         except IngestError as exc:
-            return jsonify(error=str(exc)), 400
+            return jsonify(error=exc.message), 400
         db().execute("UPDATE collectors SET last_ip = ? WHERE name = ?", (client_ip(), name))
         return jsonify(result)
 
