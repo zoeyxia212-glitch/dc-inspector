@@ -135,7 +135,8 @@ def test_silence_lifecycle(login):
     sid = res.get_json()["id"]
     listed = otto.get("/api/v1/silences").get_json()["silences"]
     assert listed[0]["active"] and listed[0]["created_by"] == "otto"
-    assert otto.delete(f"/api/v1/silences/{sid}", json={}).status_code == 200
+    res = otto.delete(f"/api/v1/silences/{sid}", json={})
+    assert res.status_code == 200
     assert otto.get("/api/v1/silences").get_json()["silences"] == []
     assert otto.post("/api/v1/silences", json={"host_pattern": "*", "duration_minutes": 60}).status_code == 400
 

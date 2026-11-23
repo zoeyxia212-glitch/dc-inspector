@@ -62,7 +62,8 @@ def test_expired_and_revoked_tokens_rejected(app, login, conn):
     conn.execute("UPDATE api_tokens SET expires_at = '2020-01-01T00:00:00Z'")
     assert app.test_client().get("/api/v1/me", headers=bearer(created["token"])).status_code == 401
     other = make_token(otto)
-    assert otto.delete(f"/api/v1/tokens/{other['id']}", json={}).status_code == 200
+    res = otto.delete(f"/api/v1/tokens/{other['id']}", json={})
+    assert res.status_code == 200
     assert app.test_client().get("/api/v1/me", headers=bearer(other["token"])).status_code == 401
 
 
@@ -81,8 +82,10 @@ def test_token_validation(login, body):
 
 def test_only_owner_or_admin_can_revoke(login):
     token_id = make_token(login("otto"))["id"]
-    assert login("vera").delete(f"/api/v1/tokens/{token_id}", json={}).status_code == 404
-    assert login("ada").delete(f"/api/v1/tokens/{token_id}", json={}).status_code == 200
+    res = login("vera").delete(f"/api/v1/tokens/{token_id}", json={})
+    assert res.status_code == 404
+    res = login("ada").delete(f"/api/v1/tokens/{token_id}", json={})
+    assert res.status_code == 200
 
 
 def test_token_actions_are_audited_with_token_name(app, login, conn):

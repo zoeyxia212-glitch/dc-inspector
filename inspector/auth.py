@@ -119,6 +119,9 @@ def get_user(conn: sqlite3.Connection, user_id: int) -> dict | None:
 
 # ------------------------------------------------------------------ collectors
 def _hash_token(token: str) -> str:
+    # Tokens are 256-bit random values from secrets.token_urlsafe, not user-chosen
+    # passwords, so a fast SHA-256 digest is the right tool here (same approach as
+    # GitHub/GitLab personal access tokens). User passwords use werkzeug scrypt above.
     return hashlib.sha256(token.encode()).hexdigest()
 
 
